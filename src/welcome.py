@@ -42,7 +42,8 @@ from editor import (
 )
 
 LOCKUP = Path(__file__).parent.parent / "assets" / "lockup.svg"
-LICENSE_URL = "https://github.com/jlachniet/stemgraph/blob/main/LICENSE"
+GITHUB_URL = "https://github.com/jlachniet/stemgraph"
+LICENSE_URL = GITHUB_URL + "/blob/main/LICENSE"
 # Links in strings.THIRD_PARTY, by field name, in the order they're shown
 THIRD_PARTY_URLS = {
     "numpy": "https://numpy.org/",
@@ -98,7 +99,7 @@ def _link(url: str) -> str:
 
 def credits_html() -> str:
     license = _link(LICENSE_URL) + html.escape(strings.LICENSE_NAME) + "</a>"
-    return html.escape(strings.CREDITS, quote=False).format(license=license)
+    return html.escape(strings.CREDITS, quote=False).format(license=license, github=_link(GITHUB_URL), end="</a>")
 
 
 def third_party_html(text: str) -> str:

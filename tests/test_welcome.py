@@ -135,10 +135,11 @@ def test_tab_cycles_within_start_panel(win, tmp_path):  # noqa: F811
     win.show_start()
     panel = win.panel
     order = []
-    for _ in range(5):
+    for _ in range(6):
         press(Qt.Key_Tab)
         order.append(focused())
-    assert order == [panel.new_button, panel.open_button, panel.recent, panel.credits, panel.new_button]
+    credits = [panel.credits, panel.credits]  # its two links: the license, then GitHub
+    assert order == [panel.new_button, panel.open_button, panel.recent, *credits, panel.new_button]
     press(Qt.Key_Backtab)
     assert focused() is panel.credits
 
@@ -181,9 +182,10 @@ def test_about_replaces_start_panel(start, win):  # noqa: F811
     assert not start.isVisible()
 
 
-def test_credits_link_to_license():
+def test_credits_link_to_license_and_github():
     assert welcome.LICENSE_URL in welcome.credits_html()
     assert strings.LICENSE_NAME in welcome.credits_html()
+    assert f'"{welcome.GITHUB_URL}"' in welcome.credits_html()
 
 
 def test_every_third_party_field_has_a_url():
@@ -191,13 +193,15 @@ def test_every_third_party_field_has_a_url():
         welcome.third_party_html(text)  # raises KeyError for a field without a URL
 
 
-def test_enter_on_credits_link_opens_license(start, monkeypatch):
+def test_enter_on_credits_links_opens_them(start, monkeypatch):
     opened = []
     monkeypatch.setattr(welcome.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
-    press(Qt.Key_Backtab)
+    press(Qt.Key_Backtab)  # backwards: the last link first
     assert focused() is start.credits
     press(Qt.Key_Return)
-    assert opened == [welcome.LICENSE_URL]
+    press(Qt.Key_Backtab)
+    press(Qt.Key_Return)
+    assert opened == [welcome.GITHUB_URL, welcome.LICENSE_URL]
 
 
 def test_tab_visits_each_link_in_about(win, monkeypatch):  # noqa: F811
@@ -205,10 +209,10 @@ def test_tab_visits_each_link_in_about(win, monkeypatch):  # noqa: F811
     monkeypatch.setattr(welcome.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
     win.activateWindow()
     win.show_about()
-    for _ in range(1 + len(welcome.THIRD_PARTY_URLS)):
+    for _ in range(2 + len(welcome.THIRD_PARTY_URLS)):
         press(Qt.Key_Tab)
         press(Qt.Key_Return)
-    assert opened == [welcome.LICENSE_URL, *welcome.THIRD_PARTY_URLS.values()]
+    assert opened == [welcome.LICENSE_URL, welcome.GITHUB_URL, *welcome.THIRD_PARTY_URLS.values()]
     press(Qt.Key_Tab)
     assert focused() is win.panel.ok
 

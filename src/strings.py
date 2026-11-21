@@ -78,8 +78,8 @@ START_NEW = "New"
 START_OPEN = "Open…"
 START_RECENT_HEADING = "Recent"
 NO_RECENT = "No recent projects."
-# Rich text: {license} is a link to the license
-CREDITS = "stemgraph © 2026 Julian Lachniet. Licensed under the {license}."
+# Rich text: {license} is a link to the license; {github} opens a link to the source code and {end} closes it
+CREDITS = "stemgraph © 2026 Julian Lachniet. Licensed under the {license}. Source code on {github}GitHub{end}."
 LICENSE_NAME = "GNU General Public License v3.0"
 ABOUT_THIRD_PARTY_HEADING = "Third-party credits"
 # Rich text: {qt}, {numpy} etc. open a link (to the URL of that name in welcome.py) and {end} closes it.
