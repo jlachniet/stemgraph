@@ -8,13 +8,11 @@ from PySide6.QtGui import (
     QFontMetrics,
     QIcon,
     QImage,
-    QKeySequence,
     QPainter,
     QPainterPath,
     QPainterPathStroker,
     QPen,
     QPixmap,
-    QShortcut,
     QTransform,
 )
 from PySide6.QtSvg import QSvgRenderer
@@ -50,6 +48,7 @@ ICON_SIZE = 15  # Radix Icons are drawn on a 15px grid; render them 1:1 so they 
 CONTROL_SIZE = 29
 CONTROL_RADIUS = 5  # corner rounding of the corner controls (node text boxes use 3px)
 KEEP_VISIBLE = 2 * GRID  # screen px of the graph that panning always leaves on screen
+FIT_MARGIN = GRID  # screen px "Zoom to Fit" leaves between the nodes and the window edges
 CONTROLS_MARGIN = 12  # gap between the corner controls and the window edge
 CONTROL_GROUP_GAP = 8  # extra space between the mode buttons and the zoom buttons
 
@@ -504,7 +503,11 @@ class CanvasControls(QWidget):
 
 
 class EditorView(QGraphicsView):
+    """The canvas. Its keyboard shortcuts (zoom, V/H for the cursor modes) live on the main window's View menu."""
+
     scene_replaced = Signal()  # set_graph put a new EditorScene in the view
+    zoom_changed = Signal(int)  # index into ZOOM_LEVELS
+    mode_changed = Signal(str)  # the chosen cursor mode (EDIT or DRAG), not counting Space held down
 
     def __init__(self, graph: Graph) -> None:
         scene = EditorScene(graph)
@@ -533,15 +536,6 @@ class EditorView(QGraphicsView):
 
         self.controls = CanvasControls(self)
         self.controls.show_mode(EDIT)
-        for keys, action in [
-            ("Ctrl+=", self.zoom_in),
-            ("Ctrl++", self.zoom_in),
-            ("Ctrl+-", self.zoom_out),
-            ("Ctrl+0", self.reset_zoom),
-            ("V", lambda: self.set_mode(EDIT)),
-            ("H", lambda: self.set_mode(DRAG)),
-        ]:
-            QShortcut(QKeySequence(keys), self).activated.connect(action)
 
     # --- Showing a different graph ---
 
@@ -595,9 +589,13 @@ class EditorView(QGraphicsView):
 
     # --- Cursor modes ---
 
+    def mode(self) -> str:
+        return self._mode
+
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._mode_changed()
+        self.mode_changed.emit(mode)
 
     def _effective_mode(self) -> str:
         return DRAG if self._space_held else self._mode
@@ -654,6 +652,23 @@ class EditorView(QGraphicsView):
     def zoom_out(self) -> None:
         self._set_zoom(self._zoom_index - 1)
 
+    def zoom_index(self) -> int:
+        return self._zoom_index
+
+    def zoom_to_fit(self) -> None:
+        """Show all nodes, with FIT_MARGIN screen px around them, at the largest zoom step up to 100% that fits."""
+        rect = self.scene().nodes_rect()
+        actual_size = ZOOM_LEVELS.index(1.0)
+        index = actual_size
+        if self.scene().node_items:
+            width = self.viewport().width() - 2 * FIT_MARGIN
+            height = self.viewport().height() - 2 * FIT_MARGIN
+            while index > 0 and (rect.width() * ZOOM_LEVELS[index] > width
+                                 or rect.height() * ZOOM_LEVELS[index] > height):
+                index -= 1
+        self._center = rect.center()  # the origin when there are no nodes
+        self._apply_zoom(index)
+
     def reset_zoom(self) -> None:
         self._set_zoom(ZOOM_LEVELS.index(1.0))
 
@@ -682,6 +697,7 @@ class EditorView(QGraphicsView):
             self._recentering = False
         self.update_bounds()  # the limits depend on how much fits on screen; also recentres on self._center
         self.controls.show_zoom(index)
+        self.zoom_changed.emit(index)
 
     def wheelEvent(self, event) -> None:
         self._wheel_delta += event.angleDelta().y()

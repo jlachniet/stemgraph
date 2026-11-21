@@ -1,10 +1,10 @@
-"""Main window: the File menu, the title bar, dialogs, and keeping track of the open project file."""
+"""Main window: the File and View menus, the title bar, dialogs, and keeping track of the open project file."""
 
 import os
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from editor import EditorView, app_settings
+from editor import DRAG, EDIT, ZOOM_LEVELS, EditorView, app_settings
 from graph import Graph
 from project import EXTENSION, ProjectError, ViewState, load, save, snapshot
 
@@ -116,12 +116,37 @@ class MainWindow(QMainWindow):
         self._action(menu, "E&xit", "Ctrl+Q", self.close)
         self._update_recent_menu()
 
-    def _action(self, menu: QMenu, text: str, keys: str, slot) -> QAction:
+        menu = self.menuBar().addMenu("&View")
+        self.zoom_in_action = self._action(menu, "Zoom &In", "Ctrl+=", self.view.zoom_in, "Ctrl++")
+        self.zoom_out_action = self._action(menu, "Zoom &Out", "Ctrl+-", self.view.zoom_out)
+        self._action(menu, "&100%", "Ctrl+0", self.view.reset_zoom)
+        self._action(menu, "Zoom to &Fit", "Ctrl+1", self.view.zoom_to_fit)
+        menu.addSeparator()
+        modes = QActionGroup(self)  # exactly one checked
+        self.mode_actions = {}
+        for mode, text, key in [(EDIT, "&Edit Mode", "V"), (DRAG, "&Drag Mode", "H")]:
+            action = self._action(menu, text, key, lambda checked=False, m=mode: self.view.set_mode(m))
+            action.setCheckable(True)
+            modes.addAction(action)
+            self.mode_actions[mode] = action
+        self.view.zoom_changed.connect(self._show_zoom)
+        self.view.mode_changed.connect(self._show_mode)
+        self._show_zoom(self.view.zoom_index())
+        self._show_mode(self.view.mode())
+
+    def _action(self, menu: QMenu, text: str, keys: str, slot, *more_keys: str) -> QAction:
         action = QAction(text, self)
-        action.setShortcut(QKeySequence(keys))
+        action.setShortcuts([QKeySequence(k) for k in (keys, *more_keys)])
         action.triggered.connect(slot)
         menu.addAction(action)
         return action
+
+    def _show_zoom(self, index: int) -> None:
+        self.zoom_in_action.setEnabled(index < len(ZOOM_LEVELS) - 1)
+        self.zoom_out_action.setEnabled(index > 0)
+
+    def _show_mode(self, mode: str) -> None:
+        self.mode_actions[mode].setChecked(True)
 
     # --- Title and unsaved changes ---
 
