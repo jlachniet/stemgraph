@@ -1,10 +1,10 @@
-"""Main window: the File, View and Build menus, the title bar, dialogs, and keeping track of the open project file."""
+"""Main window: the menus, the title bar, dialogs, and keeping track of the open project file."""
 
 import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt
+from PySide6.QtCore import QStandardPaths, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QDialog,
@@ -22,6 +22,7 @@ from editor import DRAG, EDIT, ZOOM_LEVELS, EditorView, app_settings
 from graph import Graph
 from progress import ProgressDialog
 from project import EXTENSION, ProjectError, ViewState, load, save, snapshot
+from welcome import AboutPanel, StartPanel
 
 PROJECT_FILTER = strings.PROJECT_FILTER.format(extension=EXTENSION)
 OPEN_FILTER = PROJECT_FILTER + ";;" + strings.ALL_FILES_FILTER  # loading checks the contents, so any file will do
@@ -112,8 +113,11 @@ def _path_key(path: str) -> str:
 
 
 class MainWindow(QMainWindow):
+    recent_changed = Signal()  # the recent files list changed
+
     def __init__(self) -> None:
         super().__init__()
+        self.panel: StartPanel | AboutPanel | None = None  # the start or About panel, while one is open
         self.path: str | None = None  # the open project file; None while untitled
         self.view = EditorView(Graph())
         self.view.scene_replaced.connect(self._watch_scene)
@@ -137,6 +141,8 @@ class MainWindow(QMainWindow):
         self._action(menu, strings.MENU_SAVE, "Ctrl+S", self.save)
         self._action(menu, strings.MENU_SAVE_AS, "Ctrl+Shift+S", self.save_as)
         menu.addSeparator()
+        self.build_action = self._action(menu, strings.MENU_BUILD_ACTION, "Ctrl+B", self.build)
+        menu.addSeparator()
         self._action(menu, strings.MENU_EXIT, "Ctrl+Q", self.close)
         self._update_recent_menu()
 
@@ -153,8 +159,8 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
             modes.addAction(action)
             self.mode_actions[mode] = action
-        menu = self.menuBar().addMenu(strings.MENU_BUILD)
-        self.build_action = self._action(menu, strings.MENU_BUILD_ACTION, "Ctrl+B", self.build)
+        menu = self.menuBar().addMenu(strings.MENU_HELP)
+        menu.addAction(strings.MENU_ABOUT).triggered.connect(self.show_about)
 
         self.view.zoom_changed.connect(self._show_zoom)
         self.view.mode_changed.connect(self._show_mode)
@@ -192,6 +198,7 @@ class MainWindow(QMainWindow):
 
     def _show(self, graph: Graph, view: ViewState, path: str | None) -> None:
         """Make `graph` the open project, saved at `path`."""
+        self._close_panel()
         self.view.set_graph(graph, view)
         self.path = path
         self._saved = snapshot(graph)
@@ -212,6 +219,29 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+    # --- Start and About panels ---
+
+    def show_start(self) -> None:
+        """Show the start panel: New, Open… and the recent projects. Closed once a project is started or opened."""
+        self._open_panel(StartPanel(self, MAX_RECENT))
+
+    def show_about(self) -> None:
+        self._open_panel(AboutPanel(self))
+
+    def _open_panel(self, panel: StartPanel | AboutPanel) -> None:
+        self._close_panel()
+        self.panel = panel
+        panel.closed.connect(lambda: self._forget_panel(panel))
+        panel.open()
+
+    def _forget_panel(self, panel) -> None:
+        if self.panel is panel:
+            self.panel = None
+
+    def _close_panel(self) -> None:
+        if self.panel:
+            self.panel.dismiss()
 
     # --- File actions ---
 
@@ -349,7 +379,7 @@ class MainWindow(QMainWindow):
 
     # --- Recent files ---
 
-    def _recent_files(self) -> list[str]:
+    def recent_files(self) -> list[str]:
         value = app_settings().value(RECENT_FILES_KEY, [])
         if isinstance(value, str):  # QSettings returns a one-item list as a plain string
             value = [value]
@@ -362,18 +392,19 @@ class MainWindow(QMainWindow):
         else:
             settings.remove(RECENT_FILES_KEY)
         self._update_recent_menu()
+        self.recent_changed.emit()
 
     def _add_recent(self, path: str) -> None:
         path = os.path.abspath(path).replace("\\", "/")
-        self._set_recent_files([path] + [p for p in self._recent_files() if not _same_file(p, path)])
+        self._set_recent_files([path] + [p for p in self.recent_files() if not _same_file(p, path)])
 
     def _remove_recent(self, path: str) -> None:
-        self._set_recent_files([p for p in self._recent_files() if not _same_file(p, path)])
+        self._set_recent_files([p for p in self.recent_files() if not _same_file(p, path)])
 
     def _update_recent_menu(self) -> None:
         menu = self.recent_menu
         menu.clear()
-        paths = self._recent_files()
+        paths = self.recent_files()
         for path, label in zip(paths, recent_labels(paths), strict=True):
             action = menu.addAction(label)
             action.setToolTip(path)

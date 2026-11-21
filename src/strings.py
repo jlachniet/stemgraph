@@ -5,6 +5,7 @@ Alt-key letter. Error messages from Python itself (like OSError's strerror) are 
 """
 
 APP_NAME = "stemgraph"
+VERSION = "0.1.0"  # semantic versioning; the one place the version is defined
 UNTITLED = "Untitled"
 WINDOW_TITLE = "{name}[*] - {app}"  # [*] is where Qt shows the unsaved-changes marker
 
@@ -55,10 +56,51 @@ MENU_ACTUAL_SIZE = "&100%"
 MENU_ZOOM_TO_FIT = "Zoom to &Fit"
 MENU_EDIT_MODE = "&Edit Mode"
 MENU_DRAG_MODE = "&Drag Mode"
-MENU_BUILD = "&Build"
 MENU_BUILD_ACTION = "&Build…"
 RECENT_ITEM = "{number} {name}"
 RECENT_ITEM_FOLDER = "{name} ({folder})"  # when two recent projects have the same name
+MENU_HELP = "&Help"
+MENU_ABOUT = "&About"
+
+# --- Start window and About ---
+
+VERSION_LABEL = "Version {version}"
+START_NEW = "New"
+START_OPEN = "Open…"
+START_RECENT_HEADING = "Recent"
+NO_RECENT = "No recent projects."
+# Rich text: {license} is a link to the license
+CREDITS = "stemgraph © 2026 Julian Lachniet. Licensed under the {license}."
+LICENSE_NAME = "GNU General Public License v3.0"
+ABOUT_THIRD_PARTY_HEADING = "Third-party credits"
+# Rich text: {qt}, {numpy} etc. open a link (to the URL of that name in welcome.py) and {end} closes it.
+#
+# How to write a credit:
+# - A library, font, icon set or other asset goes in THIRD_PARTY_SOFTWARE, in alphabetical order of its name (as
+#   shown, ignoring case): its name, linked to its home page, then its license, e.g. "{numpy}NumPy{end}, BSD
+#   license". Name a bundled part the same way: "..., with {libsndfile}libsndfile{end}, LGPL v2.1". There's no
+#   formal standard for this; it's the usual short form of an About screen.
+# - A paper goes in THIRD_PARTY_PAPERS, ordered by the first author's surname, then by year. Write what stemgraph
+#   uses from it, in the paper's own words and in sentence case, then "from", then the paper's IEEE citation
+#   exactly as IEEE Xplore's "Cite This" > IEEE button gives it for the published version (not a preprint). That
+#   is, with every field copied unchanged from the DOI's record (https://api.crossref.org/works/<doi>):
+#       <initial>. <surname> and <initial>. <surname>, "<title>," <venue>, <location>, <year>, pp. <pages>, doi: <doi>.
+#   (three or more authors: "A, B and C"; a journal article: "<journal>, vol. <v>, no. <n>, pp. <pages>,
+#   <month> <year>, doi: <doi>."). Link the title (inside the quotation marks) to the paper's free arXiv page,
+#   https://arxiv.org/abs/<id>, or to https://doi.org/<doi> if it isn't on arXiv.
+THIRD_PARTY_SOFTWARE = [
+    "{numpy}NumPy{end}, BSD license",
+    "{soundfile}python-soundfile{end}, BSD license, with {libsndfile}libsndfile{end}, LGPL v2.1",
+    "{qt}Qt for Python{end} (PySide6), LGPL v3",
+    "{radix_icons}Radix Icons{end} and {radix_colors}Radix Colors{end}, MIT license",
+]
+THIRD_PARTY_PAPERS = [
+    'Center-channel extraction from J. Paulus and M. Torcoli, "{paper}Geometrically-Motivated Primary-Ambient '
+    'Decomposition With Center-Channel Extraction{end}," 2022 30th European Signal Processing Conference '
+    "(EUSIPCO), Belgrade, Serbia, 2022, pp. 299-303, doi: 10.23919/EUSIPCO55093.2022.9909879.",
+]
+THIRD_PARTY = THIRD_PARTY_SOFTWARE + THIRD_PARTY_PAPERS
+ABOUT_OK = "OK"
 
 # --- File dialogs ---
 

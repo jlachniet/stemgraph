@@ -82,9 +82,10 @@ def buildable(w: MainWindow, tmp_path, name: str = "Vocals") -> None:
 # --- Starting a build ---
 
 
-def test_build_menu_and_button(win):
-    build_menu = win.menuBar().actions()[2].menu()
-    assert [(a.text(), a.shortcut().toString()) for a in build_menu.actions()] == [("&Build…", "Ctrl+B")]
+def test_build_menu_item_and_button(win):
+    file_menu = win.menuBar().actions()[0].menu()
+    items = [(a.text(), a.shortcut().toString()) for a in file_menu.actions() if not a.isSeparator()]
+    assert items[-2:] == [("&Build…", "Ctrl+B"), ("E&xit", "Ctrl+Q")]
     button = win.view.build_button
     assert button.text() == "Build" and button.toolTip() == "Build (Ctrl+B)"
     assert button.x() == 12 and button.geometry().bottom() == win.view.height() - 12 - 1

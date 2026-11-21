@@ -49,4 +49,5 @@ if sys.platform == "win32":
 window = MainWindow()
 window.resize(1200, 800)
 window.show()
+window.show_start()
 sys.exit(app.exec())

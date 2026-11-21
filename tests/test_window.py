@@ -148,7 +148,7 @@ def test_save_untitled_asks_for_path_and_adds_extension(win, file_dialogs, tmp_p
     assert (tmp_path / "song.sgp").is_file()
     assert win.windowTitle() == "song[*] - stemgraph"
     assert not win.isWindowModified()
-    assert win._recent_files() == [(tmp_path / "song.sgp").as_posix()]
+    assert win.recent_files() == [(tmp_path / "song.sgp").as_posix()]
 
 
 def test_save_again_does_not_ask_for_path(win, file_dialogs, tmp_path):
@@ -252,7 +252,7 @@ def test_open_restores_graph_view_and_title(win, file_dialogs, tmp_path):
     assert win.view.view_state() == ViewState(1.5, 120, 24)
     assert win.windowTitle() == "song[*] - stemgraph"
     assert not win.isWindowModified()
-    assert win._recent_files() == [path]
+    assert win.recent_files() == [path]
 
 
 def test_open_dialog_offers_all_files(win, monkeypatch, tmp_path):
@@ -276,7 +276,7 @@ def test_invalid_file_shows_error_and_keeps_project(win, prompts, errors, file_d
     assert errors == ["Couldn't open bad.sgp.\n\nThe file isn't a stemgraph project, or it is damaged."]
     assert node_count(win) == 1
     assert win.isWindowModified()
-    assert win._recent_files() == []
+    assert win.recent_files() == []
 
 
 def test_opening_the_open_file_reloads_it(win, prompts, tmp_path):
@@ -296,7 +296,7 @@ def test_missing_recent_file_shows_error_and_is_removed(win, prompts, errors, tm
     win.open_recent(missing)
     assert errors == [f"gone.sgp couldn't be found.\n\n{missing}"]
     assert prompts.asked == []  # nothing would be replaced, so no need to ask
-    assert win._recent_files() == []
+    assert win.recent_files() == []
 
 
 # --- Recent files ---
@@ -308,7 +308,7 @@ def test_recent_files_newest_first_without_duplicates_and_capped(win, tmp_path):
         win._add_recent(path)
     win._add_recent(paths[5])
     expected = [paths[5]] + [p for p in reversed(paths) if p != paths[5]][:9]
-    assert win._recent_files() == expected
+    assert win.recent_files() == expected
     labels = [a.text() for a in win.recent_menu.actions()]
     assert labels[:2] == ["&1 p5", "&2 p11"]
     assert labels[-2:] == ["", "&Clear Recent"]  # separator, then Clear
@@ -319,7 +319,7 @@ def test_clear_recent_empties_and_disables_menu(win, tmp_path):
     win._add_recent((tmp_path / "a.sgp").as_posix())
     assert win.recent_menu.isEnabled()
     win.recent_menu.actions()[-1].trigger()
-    assert win._recent_files() == []
+    assert win.recent_files() == []
     assert not win.recent_menu.isEnabled()
 
 
@@ -330,8 +330,8 @@ def view_menu(w: MainWindow):
     return w.menuBar().actions()[1].menu()
 
 
-def test_menu_bar_has_file_view_then_build(win):
-    assert [a.text() for a in win.menuBar().actions()] == ["&File", "&View", "&Build"]
+def test_menu_bar_has_file_view_then_help(win):
+    assert [a.text() for a in win.menuBar().actions()] == ["&File", "&View", "&Help"]
 
 
 def test_view_menu_items_and_shortcuts(win):
