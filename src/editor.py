@@ -26,10 +26,12 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMenu,
     QPushButton,
     QWidget,
+    QWidgetAction,
 )
 
 from graph import GRID, NODE_TYPES, Connection, Graph, Node, snap
@@ -104,9 +106,39 @@ QPushButton#segment_first:hover, QPushButton#segment_middle:hover, QPushButton#s
 }}
 """
 
+MENU_BAR_BACKGROUND = "#222222"  # gray-3
+MENU_BAR_HOVER = "#313131"       # gray-5
+MENU_BACKGROUND = "#313131"      # gray-5, lifted off both the canvas and the menu bar
+MENU_HOVER = "#3a3a3a"           # gray-6
+MENU_SEPARATOR = "#484848"       # gray-7
+MENU_HEADING = "#b4b4b4"         # gray-11, muted text
+
+# Menu bar and all menus (File menu, "add node" menu, text box menus). Applied app-wide in main.py.
+# Compact rows (about one grid cell) instead of the platform style's tall ones. Windows 11 rounds menu corners
+# itself (made small in main.py).
+MENU_STYLE = f"""
+QMenuBar {{
+    background: {MENU_BAR_BACKGROUND}; color: {TEXT.name()};
+    border-bottom: 1px solid {FIELD_BORDER}; padding: 2px;
+}}
+QMenuBar::item {{ background: transparent; padding: 3px 8px; border-radius: 3px; }}
+QMenuBar::item:selected, QMenuBar::item:pressed {{ background: {MENU_BAR_HOVER}; }}
+
+QMenu {{
+    background: {MENU_BACKGROUND}; color: {TEXT.name()};
+    border: none; padding: 4px 0;
+}}
+QMenu::item {{ background: transparent; margin: 0 6px; padding: 4px 24px 4px 12px; border-radius: 4px; }}
+QMenu::item:selected {{ background: {MENU_HOVER}; }}
+QMenu::item:disabled {{ color: {DISABLED_TEXT}; }}
+QMenu::separator {{ height: 1px; background: {MENU_SEPARATOR}; margin: 4px 6px; }}  /* same width as item highlights */
+QMenu::right-arrow {{ width: 8px; height: 8px; right: 14px; }}
+QLabel#menu_heading {{ color: {MENU_HEADING}; background: transparent; padding: 4px 24px 2px 16px; }}
+"""
+
 LAST_AUDIO_DIR_KEY = "last_audio_dir"  # QSettings key: folder the file picker last chose from
 # Common formats that soundfile (libsndfile) can read, alphabetical; it has no M4A/AAC support.
-AUDIO_FILTER = "Audio files (*.aif *.aiff *.flac *.mp3 *.ogg *.opus *.wav);;All files (*)"
+AUDIO_FILTER = "Audio Files (*.aif *.aiff *.flac *.mp3 *.ogg *.opus *.wav);;All Files (*)"
 
 
 def app_settings() -> QSettings:
@@ -158,6 +190,21 @@ def _ink_rect(image: QImage) -> QRect:
     ]
     xs, ys = [x for x, _ in visible], [y for _, y in visible]
     return QRect(QPoint(min(xs), min(ys)), QPoint(max(xs), max(ys)))
+
+
+def add_menu_heading(menu: QMenu, text: str) -> None:
+    """Add a title to a menu: small and muted so it can't be mistaken for an option,
+    lined up with the item text, followed by a divider, and not clickable."""
+    label = QLabel(text)
+    label.setObjectName("menu_heading")  # colour and padding in MENU_STYLE
+    font = label.font()
+    font.setPointSizeF(font.pointSizeF() * 0.9)
+    label.setFont(font)
+    action = QWidgetAction(menu)
+    action.setDefaultWidget(label)
+    action.setEnabled(False)  # skipped by the arrow keys
+    menu.addAction(action)
+    menu.addSeparator()
 
 
 def wire_path(start: QPointF, end: QPointF) -> QPainterPath:
@@ -232,6 +279,9 @@ class NodeItem(QGraphicsItem):
         # Name boxes sit to the right of their "Name:" caption.
         left = self._name_box_left() if name == "name" else 6
         widget.setStyleSheet(FIELD_STYLE)
+        # Embedded widgets are drawn over their window background colour; without this, the square behind the
+        # rounded corners shows as dark specks against the node body.
+        widget.setAttribute(Qt.WA_TranslucentBackground)
         widget.setFixedSize(NODE_WIDTH - left - 6, GRID - 4)
         proxy = QGraphicsProxyWidget(self)
         proxy.setWidget(widget)
@@ -256,7 +306,7 @@ class NodeItem(QGraphicsItem):
         window = self.scene().views()[0]
         settings = app_settings()
         start_dir = settings.value(LAST_AUDIO_DIR_KEY, "")
-        path, _ = QFileDialog.getOpenFileName(window, "Choose audio file", start_dir, AUDIO_FILTER)
+        path, _ = QFileDialog.getOpenFileName(window, "Choose Audio File", start_dir, AUDIO_FILTER)
         if path:
             settings.setValue(LAST_AUDIO_DIR_KEY, str(Path(path).parent))
             self.scene().set_value(self.node.id, "file", path)
@@ -375,6 +425,7 @@ class EditorScene(QGraphicsScene):
             super().contextMenuEvent(event)  # e.g. a text box's own copy/paste menu
             return
         menu = QMenu()
+        add_menu_heading(menu, "Add Node")
         for i, group in enumerate(MENU_GROUPS):
             if i:
                 menu.addSeparator()
@@ -514,6 +565,7 @@ class EditorView(QGraphicsView):
         super().__init__(scene)
         self._scene = scene  # keep a Python reference so the scene isn't garbage-collected
         self.setRenderHint(QPainter.Antialiasing)
+        self.setFrameShape(QGraphicsView.NoFrame)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
