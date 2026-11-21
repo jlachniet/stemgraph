@@ -91,3 +91,11 @@ def test_disconnect():
     connection = graph.connect(file, 0, out, 0)
     graph.disconnect(connection)
     assert graph.connections == set()
+
+
+def test_add_node_with_saved_id():
+    graph = Graph()
+    graph.add_node("output", 0, 0, node_id=5)
+    assert graph.add_node("output", 0, 0).id == 6
+    with pytest.raises(ValueError):
+        graph.add_node("output", 0, 0, node_id=5)

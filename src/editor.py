@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from graph import GRID, NODE_TYPES, Connection, Graph, Node, snap
+from project import ViewState
 
 NODE_WIDTH = 8 * GRID
 PORT_RADIUS = 6
@@ -243,7 +244,7 @@ class NodeItem(QGraphicsItem):
 
     def _name_field(self) -> QWidget:
         field = QLineEdit(self.node.values.get("name", ""))
-        field.textChanged.connect(lambda text: self.scene().graph.set_value(self.node.id, "name", text))
+        field.textChanged.connect(lambda text: self.scene().set_value(self.node.id, "name", text))
         return field
 
     def _file_field(self) -> QWidget:
@@ -259,7 +260,7 @@ class NodeItem(QGraphicsItem):
         path, _ = QFileDialog.getOpenFileName(window, "Choose audio file", start_dir, AUDIO_FILTER)
         if path:
             settings.setValue(LAST_AUDIO_DIR_KEY, str(Path(path).parent))
-            self.scene().graph.set_value(self.node.id, "file", path)
+            self.scene().set_value(self.node.id, "file", path)
             self._show_file(button, path)
 
     @staticmethod
@@ -342,12 +343,16 @@ class WireItem(QGraphicsPathItem):
 
 class EditorScene(QGraphicsScene):
     nodes_changed = Signal()  # a node was added, moved or removed
+    edited = Signal()  # the user changed the graph (it may have changed back to how it was)
 
     def __init__(self, graph: Graph) -> None:
         super().__init__()
         self.graph = graph
         self.node_items: dict[int, NodeItem] = {}
         self.wire_items: dict[Connection, WireItem] = {}
+        for node in graph.nodes.values():
+            self._add_item(node)
+        self.sync_wires()
 
     def nodes_rect(self) -> QRectF:
         """The area covered by all nodes, or the origin if there are none."""
@@ -388,11 +393,18 @@ class EditorScene(QGraphicsScene):
             super().keyPressEvent(event)
 
     def add_node(self, type_key: str, pos: QPointF) -> None:
-        node = self.graph.add_node(type_key, pos.x(), pos.y())
+        self._add_item(self.graph.add_node(type_key, pos.x(), pos.y()))
+        self.nodes_changed.emit()
+        self.edited.emit()
+
+    def _add_item(self, node: Node) -> None:
         item = NodeItem(node)
         self.addItem(item)
         self.node_items[node.id] = item
-        self.nodes_changed.emit()
+
+    def set_value(self, node_id: int, name: str, value: str) -> None:
+        self.graph.set_value(node_id, name, value)
+        self.edited.emit()
 
     def node_moved(self, item: NodeItem) -> None:
         node_id = item.node.id
@@ -401,6 +413,7 @@ class EditorScene(QGraphicsScene):
             if node_id in (wire.connection.src, wire.connection.dst):
                 wire.update_path()
         self.nodes_changed.emit()
+        self.edited.emit()
 
     def connect_ports(self, a: PortItem, b: PortItem) -> None:
         if a.is_output == b.is_output:
@@ -408,6 +421,7 @@ class EditorScene(QGraphicsScene):
         out, inp = (a, b) if a.is_output else (b, a)
         self.graph.connect(out.node_item.node.id, out.index, inp.node_item.node.id, inp.index)
         self.sync_wires()
+        self.edited.emit()
 
     def delete_selected(self) -> None:
         for item in self.selectedItems():
@@ -419,6 +433,7 @@ class EditorScene(QGraphicsScene):
                 self.removeItem(item)
         self.sync_wires()
         self.nodes_changed.emit()
+        self.edited.emit()
 
     def sync_wires(self) -> None:
         """Make the wire items match the model's connections."""
@@ -489,6 +504,8 @@ class CanvasControls(QWidget):
 
 
 class EditorView(QGraphicsView):
+    scene_replaced = Signal()  # set_graph put a new EditorScene in the view
+
     def __init__(self, graph: Graph) -> None:
         scene = EditorScene(graph)
         super().__init__(scene)
@@ -525,6 +542,22 @@ class EditorView(QGraphicsView):
             ("H", lambda: self.set_mode(DRAG)),
         ]:
             QShortcut(QKeySequence(keys), self).activated.connect(action)
+
+    # --- Showing a different graph ---
+
+    def set_graph(self, graph: Graph, view: ViewState) -> None:
+        """Show `graph` in a fresh scene, at the given zoom and centre."""
+        self._leave_text_box()
+        scene = EditorScene(graph)
+        scene.nodes_changed.connect(self.update_bounds)
+        self.setScene(scene)
+        self._scene = scene
+        self._center = QPointF(view.center_x, view.center_y)
+        self._apply_zoom(min(range(len(ZOOM_LEVELS)), key=lambda i: abs(ZOOM_LEVELS[i] - view.zoom)))
+        self.scene_replaced.emit()
+
+    def view_state(self) -> ViewState:
+        return ViewState(ZOOM_LEVELS[self._zoom_index], self._center.x(), self._center.y())
 
     # --- View centre and pan limits ---
 
@@ -629,7 +662,6 @@ class EditorView(QGraphicsView):
         index = max(0, min(len(ZOOM_LEVELS) - 1, index))
         if index == self._zoom_index:
             return
-        self._zoom_index = index
         zoom = ZOOM_LEVELS[index]
         if anchor is not None:
             # Choose the new centre so the scene point under `anchor` stays under it at the new zoom.
@@ -637,6 +669,12 @@ class EditorView(QGraphicsView):
             offset = QPointF(anchor) - QPointF(size.width() / 2, size.height() / 2)  # screen px from the middle
             fixed_point = self._center + offset / self.transform().m11()
             self._center = fixed_point - offset / zoom
+        self._apply_zoom(index)
+
+    def _apply_zoom(self, index: int) -> None:
+        """Set the zoom to ZOOM_LEVELS[index] around self._center."""
+        self._zoom_index = index
+        zoom = ZOOM_LEVELS[index]
         self._recentering = True
         try:
             self.setTransform(QTransform.fromScale(zoom, zoom))

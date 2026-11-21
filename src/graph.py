@@ -1,7 +1,6 @@
 """Node graph model: node types, nodes, connections and the rules between them. No Qt."""
 
 from dataclasses import dataclass, field
-from itertools import count
 
 GRID = 24
 
@@ -51,10 +50,18 @@ class Graph:
     def __init__(self) -> None:
         self.nodes: dict[int, Node] = {}
         self.connections: set[Connection] = set()
-        self._ids = count(1)
+        self._next_id = 1
 
-    def add_node(self, type_key: str, x: float, y: float) -> Node:
-        node = Node(next(self._ids), type_key, snap(x), snap(y))
+    def add_node(self, type_key: str, x: float, y: float, node_id: int | None = None) -> Node:
+        """Add a node. `node_id` is for restoring a saved graph; new nodes get the next free id."""
+        if type_key not in NODE_TYPES:
+            raise ValueError(f"unknown node type {type_key!r}")
+        if node_id is None:
+            node_id = self._next_id
+        elif node_id < 1 or node_id in self.nodes:
+            raise ValueError(f"node id {node_id} is invalid or already used")
+        self._next_id = max(self._next_id, node_id + 1)
+        node = Node(node_id, type_key, snap(x), snap(y))
         self.nodes[node.id] = node
         return node
 

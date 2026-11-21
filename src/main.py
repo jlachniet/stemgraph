@@ -4,8 +4,7 @@ from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from editor import EditorView
-from graph import Graph
+from window import MainWindow
 
 LOGO = Path(__file__).parent.parent / "assets" / "logo.svg"
 
@@ -14,10 +13,10 @@ if sys.platform == "win32":
     import ctypes
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("stemgraph")
 
+
 app = QApplication(sys.argv)
 app.setWindowIcon(QIcon(str(LOGO)))
-view = EditorView(Graph())
-view.setWindowTitle("stemgraph")
-view.resize(1200, 800)
-view.show()
+window = MainWindow()
+window.resize(1200, 800)
+window.show()
 sys.exit(app.exec())
