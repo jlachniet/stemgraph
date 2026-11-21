@@ -61,22 +61,87 @@ def test_resample_can_be_cancelled():
         audio.resample(np.zeros((1000, 2)), 48000, audio.RATE, cancelled=lambda: True)
 
 
-# --- Mid/side ---
+# --- Center/side splits ---
 
 
-def test_mid_plus_side_gives_back_the_input_exactly():
-    x = np.random.default_rng(2).uniform(-1, 1, (10000, 2)).astype(np.float32).astype(np.float64)
-    mid, side = audio.split_mid_side(x)
-    assert np.array_equal(mid + side, x)
-    assert np.array_equal(mid[:, 0], mid[:, 1])         # mid is centred
-    assert np.array_equal(side[:, 0], -side[:, 1])      # side is the out-of-phase part
-    assert np.array_equal(mid[:, 0], (x[:, 0] + x[:, 1]) / 2)
+def energy(x: np.ndarray) -> float:
+    return float(np.sum(x ** 2))
 
 
-def test_mono_material_has_no_side():
-    x = np.repeat(np.linspace(-1, 1, 100)[:, None], 2, axis=1)
-    mid, side = audio.split_mid_side(x)
+def test_mid_plus_side_gives_back_the_input():
+    x = np.random.default_rng(2).uniform(-1, 1, (10000, 2))
+    mid, side = audio.split_paulus_torcoli(x)
+    assert mid.shape == side.shape == x.shape
+    assert np.allclose(mid + side, x, rtol=0, atol=1e-15)
+    assert np.array_equal(mid[:, 0], mid[:, 1])  # mid is mono
+
+
+def test_mono_material_is_all_mid_exactly():
+    noise = np.random.default_rng(3).normal(0, 0.3, 20000)
+    x = np.column_stack((noise, noise))
+    mid, side = audio.split_paulus_torcoli(x)
     assert np.array_equal(mid, x) and not side.any()
+
+
+def test_center_is_separated_from_sides_at_other_frequencies():
+    t = np.arange(2 * audio.RATE) / audio.RATE
+    center = 0.3 * np.sin(2 * np.pi * 440 * t) + 0.2 * np.sin(2 * np.pi * 1320 * t)
+    left_only, right_only = 0.25 * np.sin(2 * np.pi * 3000 * t), 0.2 * np.sin(2 * np.pi * 5000 * t)
+    x = np.column_stack((left_only + center, right_only + center))
+    mid, side = audio.split_paulus_torcoli(x)
+    inner = slice(audio.FRAME, -audio.FRAME)  # away from the ends, where tones start and stop abruptly
+    assert energy(mid[inner, 0] - center[inner]) < 1e-4 * energy(center[inner])
+    assert energy(side[inner, 0] - left_only[inner]) < 1e-4 * energy(left_only[inner])
+    assert energy(side[inner, 1] - right_only[inner]) < 1e-4 * energy(right_only[inner])
+
+
+def test_center_estimate_of_overlapping_noise_approaches_the_wiener_bound():
+    rng = np.random.default_rng(4)
+    n = 4 * audio.RATE
+    pc, pa, pb = 0.09, 0.04, 0.01  # powers of center, left-only and right-only
+    center, left_only, right_only = (rng.normal(0, np.sqrt(p), n) for p in (pc, pa, pb))
+    x = np.column_stack((left_only + center, right_only + center))
+    mid, _ = audio.split_paulus_torcoli(x)
+    error = energy(mid[:, 0] - center) / n
+    best = pc * pa * pb / (pa * pb + pc * (pa + pb))  # the error of the Wiener estimate with known powers
+    plain = (pa + pb) / 4                            # the error of (L + R)/2
+    assert best < error < plain
+    assert error < 1.6 * best  # the covariances are estimated from only 5 frames, so some error remains
+
+
+def test_one_sided_and_out_of_phase_material_is_all_side():
+    signal = np.random.default_rng(5).normal(0, 0.3, 20000)
+    for x in (np.column_stack((signal, np.zeros_like(signal))), np.column_stack((signal, -signal))):
+        mid, side = audio.split_paulus_torcoli(x)
+        assert energy(mid) < 1e-6 * energy(x)
+        assert np.allclose(side, x, rtol=0, atol=1e-12)
+
+
+def test_split_handles_input_shorter_than_a_frame():
+    x = np.random.default_rng(6).uniform(-1, 1, (10, 2))
+    mid, side = audio.split_paulus_torcoli(x)
+    assert mid.shape == (10, 2) and np.allclose(mid + side, x, rtol=0, atol=1e-15)
+
+
+def test_split_blocks_join_seamlessly(monkeypatch):
+    x = np.random.default_rng(7).uniform(-1, 1, (20000, 2))
+    whole, _ = audio.split_paulus_torcoli(x)
+    monkeypatch.setattr(audio, "SPLIT_BLOCK", 3)
+    blocked, _ = audio.split_paulus_torcoli(x)
+    assert np.array_equal(blocked, whole)
+
+
+def test_mid_side_split_has_mono_side_inverted_on_the_right():
+    x = np.random.default_rng(8).uniform(-1, 1, (10000, 2))
+    mid, side = audio.split_mid_side(x)
+    assert np.allclose(mid + side, x, rtol=0, atol=1e-15)
+    assert np.array_equal(mid[:, 0], (x[:, 0] + x[:, 1]) / 2) and np.array_equal(mid[:, 0], mid[:, 1])
+    assert np.array_equal(side[:, 0], -side[:, 1])
+
+
+def test_split_can_be_cancelled():
+    with pytest.raises(audio.Cancelled):
+        audio.split_paulus_torcoli(np.zeros((1000, 2)), cancelled=lambda: True)
 
 
 # --- Reading ---

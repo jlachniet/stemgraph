@@ -12,11 +12,18 @@ WINDOW_TITLE = "{name}[*] - {app}"  # [*] is where Qt shows the unsaved-changes 
 
 NODE_INPUT = "Input"
 NODE_OUTPUT = "Output"
-NODE_SPLIT_MID_SIDE = "Split Mid/Side"
+NODE_SPLIT_CENTER_SIDE = "Split Center/Side"
 PORT_AUDIO = "audio"
-PORT_MID = "mid"
+PORT_CENTER = "center"
 PORT_SIDE = "side"
 NAME_CAPTION = "Name:"
+ALGORITHM_CAPTION = "Algorithm:"
+ALGORITHM_AUTO = "Auto"
+ALGORITHM_PAULUS_TORCOLI = "Paulus–Torcoli"
+ALGORITHM_MID_SIDE = "Mid/side"
+AUTO_LIST_LABEL = "Auto ({choice})"  # Auto in an opened dropdown, naming what it currently stands for
+ALGORITHM_PAULUS_TORCOLI_TIP = "Side output is stereo"
+ALGORITHM_MID_SIDE_TIP = "Side output is mono, inverted on the right"
 CHOOSE_FILE = "Choose file…"
 ADD_NODE_HEADING = "Add Node"
 
@@ -93,7 +100,7 @@ NODE_NOT_CONNECTED = "A {node} node has nothing connected to its input."
 INPUT_NO_FILE = 'Input "{input}" has no file chosen.'
 INPUT_PROBLEM = 'Input "{input}": {problem}'
 INPUT_FILE_NOT_FOUND = "{file} couldn't be found."
-NUMBERED_NAME = "{name} {number}"  # a default Output name already taken: "Song mid 2"
+NUMBERED_NAME = "{name} {number}"  # a default Output name already taken: "Song center 2"
 OUTPUT_NAME_TOO_LONG = 'Output "{output}" has a name too long for a file name.'
 OUTPUTS_CLASH = 'Outputs "{first}" and "{second}" would both be saved as {file}.'
 REPLACE_ONE = "This file already exists in the export folder:\n\n{files}\n\nReplace it?"
@@ -114,9 +121,9 @@ CANCELLING = "Cancelling after this step…"
 
 STEP_LOAD = "Loading {file}"
 STEP_RESAMPLE = "Resampling {file} from {rate} Hz to {target} Hz"
-STEP_SPLIT = "Splitting {source} into mid and side"
+STEP_SPLIT = "Splitting {source} into center and side"
 STEP_WRITE = "Writing {file}"
-SOURCE_OUTPUT = "{source} {port}"  # a split's output, as a source: "Song mid"
+SOURCE_OUTPUT = "{source} {port}"  # a split's output, as a source: "Song center"
 
 LOG_MONO = "{file} is mono; using it on both channels."
 LOG_PEAK = "{file} peaks at +{db:.1f} dBFS."
@@ -127,4 +134,5 @@ CANT_WRITE_FILE = "Couldn't write {file}: {reason}."
 CANT_WRITE_FOLDER = "Couldn't write to the export folder: {reason}."
 NO_MEMORY_LOAD = "There isn't enough memory to load {file}."
 NO_MEMORY_RESAMPLE = "There isn't enough memory to resample {file}."
+NO_MEMORY_SPLIT = "There isn't enough memory to split {source}."
 NO_MEMORY_BUILD = "There isn't enough memory to finish the build."

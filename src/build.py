@@ -15,7 +15,7 @@ from pathlib import Path
 
 import audio
 import strings
-from graph import Graph, Node
+from graph import MID_SIDE, Graph, Node
 
 EXPORT_EXTENSION = ".wav"
 MAX_FILE_NAME = 255  # characters, including the extension
@@ -99,7 +99,7 @@ def input_name(node: Node) -> str:
 
 
 def _source_name(graph: Graph, feeds: dict, node_id: int, output: int) -> str:
-    """A name for what comes out of a node's output: "Song" for an Input, "Song mid" for a split of it."""
+    """A name for what comes out of a node's output: "Song" for an Input, "Song center" for a split of it."""
     node = graph.nodes[node_id]
     if node.type_key == "input":
         return input_name(node)
@@ -111,7 +111,7 @@ def _source_name(graph: Graph, feeds: dict, node_id: int, output: int) -> str:
 def output_names(graph: Graph) -> dict[int, str]:
     """The name each Output is saved under, by node id.
 
-    An Output with a name keeps it. A blank one is named after its source ("Song mid"), or "Output" if nothing
+    An Output with a name keeps it. A blank one is named after its source ("Song center"), or "Output" if nothing
     is connected; " 2", " 3", … is added if that file name is already taken, so defaults never clash with each
     other or with named Outputs. Taken names are claimed in build order (top to bottom).
     """
@@ -255,8 +255,10 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
             if keys[0] not in done:
                 source = require(*feeds[(node_id, 0)])
                 done.update(keys)
-                label = strings.STEP_SPLIT.format(source=describe(*feeds[(node_id, 0)]))
-                steps.append(Step(label, _split(source, keys), uses=(source,)))
+                name = describe(*feeds[(node_id, 0)])
+                label = strings.STEP_SPLIT.format(source=name)
+                algorithm = node.choice("algorithm")
+                steps.append(Step(label, _split(source, keys, name, algorithm), uses=(source,)))
             return keys[output]
         raise ValueError(f"can't compute a {node.type.title} node")
 
@@ -301,9 +303,16 @@ def _resample(path: str, raw: tuple, key: tuple, rate: int):
     return action
 
 
-def _split(source: tuple, keys: tuple):
+def _split(source: tuple, keys: tuple, name: str, algorithm: str):
     def action(ctx: Context) -> list:
-        ctx.store[keys[0]], ctx.store[keys[1]] = audio.split_mid_side(ctx.store[source])
+        try:
+            if algorithm == MID_SIDE:
+                halves = audio.split_mid_side(ctx.store[source])
+            else:
+                halves = audio.split_paulus_torcoli(ctx.store[source], ctx.cancelled)
+            ctx.store[keys[0]], ctx.store[keys[1]] = halves
+        except MemoryError:
+            raise BuildError(strings.NO_MEMORY_SPLIT.format(source=name)) from None
         return []
     return action
 

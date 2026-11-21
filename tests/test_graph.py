@@ -99,3 +99,21 @@ def test_add_node_with_saved_id():
     assert graph.add_node("output", 0, 0).id == 6
     with pytest.raises(ValueError):
         graph.add_node("output", 0, 0, node_id=5)
+
+
+def test_algorithm_is_a_choice():
+    graph = Graph()
+    split = graph.add_node("split_mid_side", 0, 0)
+    graph.set_value(split.id, "algorithm", "mid_side")
+    assert split.values["algorithm"] == "mid_side"
+    graph.set_value(split.id, "algorithm", "")  # Auto
+    with pytest.raises(ValueError):
+        graph.set_value(split.id, "algorithm", "fancy")
+
+
+def test_auto_resolves_to_its_current_choice():
+    graph = Graph()
+    split = graph.add_node("split_mid_side", 0, 0)
+    assert split.choice("algorithm") == "paulus_torcoli"
+    graph.set_value(split.id, "algorithm", "mid_side")
+    assert split.choice("algorithm") == "mid_side"

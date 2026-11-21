@@ -4,7 +4,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QGraphicsProxyWidget, QLabel, QMenu, QWidgetAction
 
-from editor import FIT_MARGIN, PLACEHOLDER_TEXT, EditorView, add_menu_heading
+from editor import FIT_MARGIN, PLACEHOLDER_TEXT, ChoiceField, EditorView, add_menu_heading
 from graph import Graph
 from project import ViewState
 
@@ -138,6 +138,48 @@ def test_blank_input_names_show_their_file_name_greyed_out(view, tmp_path):
     assert field.text() == "" and field.placeholderText() == "Input"
     scene.set_value(song.id, "file", str(tmp_path / "Want You Gone.mp3"))  # what choosing a file does
     assert field.placeholderText() == "Want You Gone"
+
+
+def test_split_algorithm_is_a_dropdown_defaulting_to_auto(view):
+    graph = Graph()
+    split = graph.add_node("split_mid_side", 0, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    edits = []
+    scene.edited.connect(lambda: edits.append(True))
+    (proxy,) = scene.node_items[split.id].fields
+    field = proxy.widget()
+    assert isinstance(field, ChoiceField)
+    # The opened list says what Auto currently stands for; the closed box just says "Auto".
+    assert [field.itemText(i) for i in range(field.count())] == ["Auto (Paulus–Torcoli)", "Paulus–Torcoli", "Mid/side"]
+    assert field.currentIndex() == 0 and field.currentData(ChoiceField.SHORT_LABEL_ROLE) == "Auto" and not edits
+    field.setCurrentIndex(2)
+    assert graph.nodes[split.id].values["algorithm"] == "mid_side" and edits
+    field.setCurrentIndex(0)
+    assert graph.nodes[split.id].values["algorithm"] == ""
+
+
+def test_open_dropdown_is_drawn_above_ports_and_other_nodes(view):
+    graph = Graph()
+    split = graph.add_node("split_mid_side", 0, 0)
+    graph.add_node("output", 216, 0)  # right next to it, where the opened list overlaps
+    view.set_graph(graph, ViewState())
+    item = view.scene().node_items[split.id]
+    proxy = item.fields[0]
+    others = [i for i in view.scene().node_items.values() if i is not item]
+    proxy.widget().showPopup()
+    assert all(item.zValue() > other.zValue() for other in others)
+    assert all(proxy.zValue() > port.zValue() for port in item.inputs + item.outputs)
+    proxy.widget().hidePopup()
+    assert item.zValue() == proxy.zValue() == 0
+
+
+def test_saved_algorithm_shows_in_its_dropdown(view):
+    graph = Graph()
+    split = graph.add_node("split_mid_side", 0, 0)
+    graph.set_value(split.id, "algorithm", "paulus_torcoli")
+    view.set_graph(graph, ViewState())
+    assert view.scene().node_items[split.id].fields[0].widget().currentText() == "Paulus–Torcoli"
 
 
 def test_tab_moves_between_fields_in_reading_order(view):

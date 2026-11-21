@@ -91,7 +91,7 @@ def test_blank_outputs_are_named_after_their_source(tmp_path):
     add_output(g, "  ", split, 1, y=100)
     add_output(g, "", song, y=200)
     add_output(g, "", add_input(g, "", tone(tmp_path / "drums.wav")), y=300)  # unnamed Input: its file's name
-    assert make_plan(g).files == ["Song mid.wav", "Song side.wav", "Song.wav", "drums.wav"]
+    assert make_plan(g).files == ["Song center.wav", "Song side.wav", "Song.wav", "drums.wav"]
 
 
 def test_default_names_are_numbered_instead_of_clashing(tmp_path):
@@ -130,7 +130,7 @@ def test_all_problems_are_listed_together(tmp_path):
     add_output(g, "Bass", add_input(g, "Bass", str(tmp_path / "missing.wav")))
     assert problems(g) == [
         'Output "Vocals" has nothing connected to it.',
-        "A Split Mid/Side node has nothing connected to its input.",
+        "A Split Center/Side node has nothing connected to its input.",
         'Input "Drums" has no file chosen.',
         'Input "Bass": missing.wav couldn\'t be found.',
     ]
@@ -187,7 +187,7 @@ def test_steps_compute_only_what_reaches_an_output(tmp_path):
     assert [s.label for s in plan.steps] == [
         "Loading song.wav",
         "Resampling song.wav from 48000 Hz to 44100 Hz",
-        "Splitting Song into mid and side",
+        "Splitting Song into center and side",
         "Writing Side.wav",
         "Writing Mid.wav",
         "Writing Song.wav",
@@ -209,7 +209,7 @@ def test_chained_splits_are_described_by_their_source(tmp_path):
     second = g.add_node("split_mid_side", 0, 0).id
     g.connect(first, 1, second, 0)
     add_output(g, "Out", second, 0)
-    assert "Splitting Song side into mid and side" in [s.label for s in make_plan(g).steps]
+    assert "Splitting Song side into center and side" in [s.label for s in make_plan(g).steps]
 
 
 # --- Running ---
@@ -238,7 +238,7 @@ def test_build_writes_the_split(tmp_path):
 
     source = soundfile.read(path, dtype="float64")[0]
     mid, side = read(out / "Mid.wav"), read(out / "Side.wav")
-    expected_mid, expected_side = audio.split_mid_side(source)
+    expected_mid, expected_side = audio.split_paulus_torcoli(source)
     assert np.array_equal(mid, expected_mid.astype(np.float32))
     assert np.array_equal(side, expected_side.astype(np.float32))
 
@@ -314,3 +314,21 @@ def test_existing_files(tmp_path):
     add_output(g, "B", source, y=100)
     (tmp_path / "B.wav").write_bytes(b"")
     assert build.existing_files(make_plan(g), str(tmp_path)) == ["B.wav"]
+
+
+@pytest.mark.parametrize("algorithm, split", [
+    ("", audio.split_paulus_torcoli),
+    ("paulus_torcoli", audio.split_paulus_torcoli),
+    ("mid_side", audio.split_mid_side),
+])
+def test_build_uses_the_chosen_algorithm(tmp_path, algorithm, split):
+    out = tmp_path / "out"
+    out.mkdir()
+    path = tone(tmp_path / "song.wav")
+    g = Graph()
+    node = add_split(g, add_input(g, "Song", path))
+    g.set_value(node, "algorithm", algorithm)
+    add_output(g, "Side", node, 1)
+    assert run(make_plan(g), out)[0]
+    expected = split(soundfile.read(path, dtype="float64")[0])[1]
+    assert np.array_equal(read(out / "Side.wav"), expected.astype(np.float32))

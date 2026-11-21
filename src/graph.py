@@ -12,13 +12,31 @@ class NodeType:
     title: str
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
-    fields: tuple[str, ...] = ()  # editable values shown in the node: "name" (text), "file" (path)
+    # Editable values shown in the node: "name" (text), "file" (path), or a key of CHOICES (a dropdown).
+    fields: tuple[str, ...] = ()
 
+
+# Dropdown fields: the values each may hold, in menu order, with their labels and hover text. The first is AUTO,
+# the default:
+# whichever choice AUTO_CHOICE names, which may change between versions. It's stored as "" so that a node left on
+# it saves the same as one never touched.
+AUTO = ""
+PAULUS_TORCOLI = "paulus_torcoli"
+MID_SIDE = "mid_side"
+CHOICES = {
+    "algorithm": (
+        (AUTO, strings.ALGORITHM_AUTO, ""),
+        (PAULUS_TORCOLI, strings.ALGORITHM_PAULUS_TORCOLI, strings.ALGORITHM_PAULUS_TORCOLI_TIP),
+        (MID_SIDE, strings.ALGORITHM_MID_SIDE, strings.ALGORITHM_MID_SIDE_TIP),
+    ),
+}
+AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI}
 
 NODE_TYPES = {
     "input": NodeType(strings.NODE_INPUT, (), (strings.PORT_AUDIO,), fields=("name", "file")),
     "split_mid_side": NodeType(
-        strings.NODE_SPLIT_MID_SIDE, (strings.PORT_AUDIO,), (strings.PORT_MID, strings.PORT_SIDE)
+        strings.NODE_SPLIT_CENTER_SIDE, (strings.PORT_AUDIO,), (strings.PORT_CENTER, strings.PORT_SIDE),
+        fields=("algorithm",),
     ),
     "output": NodeType(strings.NODE_OUTPUT, (strings.PORT_AUDIO,), (), fields=("name",)),
 }
@@ -40,6 +58,11 @@ class Node:
     @property
     def type(self) -> NodeType:
         return NODE_TYPES[self.type_key]
+
+    def choice(self, name: str) -> str:
+        """The value of a dropdown field, with AUTO resolved to the choice it currently stands for."""
+        value = self.values.get(name, AUTO)
+        return AUTO_CHOICE[name] if value == AUTO else value
 
 
 @dataclass(frozen=True)
@@ -77,6 +100,8 @@ class Graph:
         node = self.nodes[node_id]
         if name not in node.type.fields:
             raise ValueError(f"{node.type.title} has no field {name!r}")
+        if name in CHOICES and value not in (choice[0] for choice in CHOICES[name]):
+            raise ValueError(f"{value!r} is not a choice for {name!r}")
         node.values[name] = value
 
     def remove_node(self, node_id: int) -> None:

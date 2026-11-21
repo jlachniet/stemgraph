@@ -151,3 +151,23 @@ def test_rejects_invalid_files(text):
 
 def test_ignores_unknown_keys():
     loads(project_text(future_feature={"a": 1}), "p.sgp")
+
+
+def test_algorithm_round_trips_and_auto_is_not_saved():
+    graph = Graph()
+    split = graph.add_node("split_mid_side", 0, 0)
+    graph.set_value(split.id, "algorithm", "mid_side")
+    loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
+    assert loaded.nodes[split.id].values["algorithm"] == "mid_side"
+
+    untouched = Graph()
+    untouched.add_node("split_mid_side", 0, 0)
+    graph.set_value(split.id, "algorithm", "")  # back to Auto: saves the same as never choosing
+    assert "algorithm" not in json.loads(dumps(graph, ViewState(), "."))["nodes"][0]["values"]
+    assert snapshot(graph) == snapshot(untouched)
+
+
+def test_rejects_unknown_algorithm():
+    node = {"id": 1, "type": "split_mid_side", "x": 0, "y": 0, "values": {"algorithm": "fancy"}}
+    with pytest.raises(ProjectError):
+        loads(project_text(nodes=[node]), ".")

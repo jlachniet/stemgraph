@@ -169,7 +169,10 @@ def loads(text: str, project_path: str) -> tuple[Graph, ViewState]:
         for name, value in _dict(entry.get("values", {})).items():
             if name not in node.type.fields or not isinstance(value, str):
                 raise ProjectError(strings.INVALID_NODE)
-            graph.set_value(node.id, name, path_from_file(value, project_dir) if name in PATH_FIELDS else value)
+            try:
+                graph.set_value(node.id, name, path_from_file(value, project_dir) if name in PATH_FIELDS else value)
+            except ValueError:  # not one of a dropdown's choices
+                raise ProjectError(strings.INVALID_NODE) from None
 
     for entry in _list(data.get("connections", [])):
         entry = _dict(entry)

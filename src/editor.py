@@ -18,6 +18,7 @@ from PySide6.QtGui import (
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QGraphicsEllipseItem,
     QGraphicsItem,
@@ -30,13 +31,16 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QPushButton,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QWidget,
     QWidgetAction,
 )
 
 import build
 import strings
-from graph import GRID, NODE_TYPES, Connection, Graph, Node, snap
+from graph import AUTO, AUTO_CHOICE, CHOICES, GRID, NODE_TYPES, Connection, Graph, Node, snap
 from project import ViewState
 
 NODE_WIDTH = 8 * GRID
@@ -47,7 +51,7 @@ WHEEL_NOTCH = 120  # angleDelta of one mouse-wheel notch
 ICON_DIR = Path(__file__).parent.parent / "assets" / "icons"  # Radix Icons, MIT (see docs/design.md)
 ICON_SIZE = 15  # Radix Icons are drawn on a 15px grid; render them 1:1 so they stay crisp
 # Height of the corner controls, and width of their icon buttons. Odd on purpose: inside the 1px border
-# that leaves 27px, so icons whose ink is an odd number of pixels across (most of them) centre exactly.
+# that leaves 27px, so icons whose ink is an odd number of pixels across (most of them) center exactly.
 CONTROL_SIZE = 29
 CONTROL_RADIUS = 5  # corner rounding of the corner controls (node text boxes use 3px)
 KEEP_VISIBLE = 2 * GRID  # screen px of the graph that panning always leaves on screen
@@ -83,15 +87,29 @@ DISABLED_TEXT = "#606060"        # gray-8
 ACTIVE_BACKGROUND = "#3a3a3a"    # gray-6, the current cursor mode's button
 HOVER_BACKGROUND = "#2a2a2a"     # gray-4
 
+MENU_BAR_BACKGROUND = "#222222"  # gray-3
+MENU_BAR_HOVER = "#313131"       # gray-5
+MENU_BACKGROUND = "#313131"      # gray-5, lifted off both the canvas and the menu bar
+MENU_HOVER = "#3a3a3a"           # gray-6
+MENU_SEPARATOR = "#484848"       # gray-7
+MENU_HEADING = "#b4b4b4"         # gray-11, muted text
+
 FIELD_STYLE = f"""
-QLineEdit, QPushButton {{
+QLineEdit, QPushButton, QComboBox {{
     background: {FIELD_BACKGROUND}; color: {TEXT.name()};
     border: 1px solid {FIELD_BORDER}; border-radius: 3px;
     padding: 0 4px; text-align: left;
 }}
+/* ChoiceField draws its own chevron in the drop-down area. */
+QComboBox::drop-down {{ border: none; width: {ICON_SIZE + 4}px; }}
+QComboBox::down-arrow {{ image: none; }}
+QComboBox QAbstractItemView {{
+    background: {MENU_BACKGROUND}; color: {TEXT.name()}; border: none; padding: 4px 0; outline: none;
+    selection-background-color: {MENU_HOVER}; selection-color: {TEXT.name()};
+}}
 /* QLineEdit adds its own ~3px text margin; the padding lines its text up with buttons */
 QLineEdit {{ padding: 0 1px; placeholder-text-color: {PLACEHOLDER_TEXT.name()}; }}
-QLineEdit:focus, QPushButton:hover {{ border-color: {FIELD_BORDER_ACTIVE}; }}
+QLineEdit:focus, QPushButton:hover, QComboBox:hover, QComboBox:focus {{ border-color: {FIELD_BORDER_ACTIVE}; }}
 """
 
 CONTROLS_STYLE = FIELD_STYLE + f"""
@@ -109,13 +127,6 @@ QPushButton#segment_first:hover, QPushButton#segment_middle:hover, QPushButton#s
 }}
 QPushButton#build {{ padding: 0 10px 0 6px; }}
 """
-
-MENU_BAR_BACKGROUND = "#222222"  # gray-3
-MENU_BAR_HOVER = "#313131"       # gray-5
-MENU_BACKGROUND = "#313131"      # gray-5, lifted off both the canvas and the menu bar
-MENU_HOVER = "#3a3a3a"           # gray-6
-MENU_SEPARATOR = "#484848"       # gray-7
-MENU_HEADING = "#b4b4b4"         # gray-11, muted text
 
 # Menu bar and all menus (File menu, "add node" menu, text box menus). Applied app-wide in main.py.
 # Compact rows (about one grid cell) instead of the platform style's tall ones. Windows 11 rounds menu corners
@@ -163,7 +174,7 @@ def load_icon(name: str, box: int) -> QIcon:
     """An icon from assets/icons on a `box`-sized canvas, recolored to the theme (the SVGs draw in currentColor).
 
     The glyph is drawn at its native ICON_SIZE so it stays crisp, then shifted by whole pixels so its
-    visible ink (not its nominal 15px box, which some glyphs don't fill evenly) is centred on the canvas.
+    visible ink (not its nominal 15px box, which some glyphs don't fill evenly) is centered on the canvas.
     """
     svg = (ICON_DIR / f"{name}.svg").read_text()
     icon = QIcon()
@@ -265,6 +276,54 @@ class PortItem(QGraphicsEllipseItem):
                 break
 
 
+FIELD_CAPTIONS = {"name": strings.NAME_CAPTION, "algorithm": strings.ALGORITHM_CAPTION}
+OPEN_POPUP_Z = 10  # stacking level of a node with an open dropdown, and of that dropdown's field
+
+
+class ChoiceField(QComboBox):
+    """A dropdown node field. The platform style's arrow is hidden (see FIELD_STYLE); this draws a Radix chevron.
+
+    An item can have a shorter label for the closed box (SHORT_LABEL_ROLE), so the opened list can say more:
+    "Auto (Paulus–Torcoli)" in the list, "Auto" on the node.
+    """
+
+    SHORT_LABEL_ROLE = Qt.UserRole + 1
+    _chevrons: dict[int, QIcon] = {}  # by box size, shared by every dropdown
+
+    # Qt embeds the opened list in the scene as a child of the field, so ports and other nodes would draw over it.
+    # While it's open, lift the field above its node's ports and the node above other nodes.
+    def showPopup(self) -> None:
+        self._lift(OPEN_POPUP_Z)
+        super().showPopup()
+
+    def hidePopup(self) -> None:
+        super().hidePopup()
+        self._lift(0)
+
+    def _lift(self, z: float) -> None:
+        field = self.graphicsProxyWidget()
+        if field:
+            field.setZValue(z)
+            if field.parentItem():
+                field.parentItem().setZValue(z)
+
+    def paintEvent(self, event) -> None:
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        short = self.currentData(self.SHORT_LABEL_ROLE)
+        if short:
+            option.currentText = short
+        painter.drawComplexControl(QStyle.CC_ComboBox, option)
+        painter.drawControl(QStyle.CE_ComboBoxLabel, option)
+        box = self.height()
+        if box not in self._chevrons:
+            self._chevrons[box] = load_icon("chevron-down", box)
+        mode = QIcon.Normal if self.isEnabled() else QIcon.Disabled
+        self._chevrons[box].paint(painter, QRect(self.width() - box, 0, box, box), Qt.AlignCenter, mode)
+        painter.end()
+
+
 class NodeItem(QGraphicsItem):
     def __init__(self, node: Node) -> None:
         super().__init__()
@@ -286,9 +345,15 @@ class NodeItem(QGraphicsItem):
         self.outputs = [PortItem(self, True, i) for i in range(len(node.type.outputs))]
 
     def _add_field(self, row: int, name: str) -> None:
-        widget = self._name_field() if name == "name" else self._file_field()
-        # Name boxes sit to the right of their "Name:" caption.
-        left = self._name_box_left() if name == "name" else 6
+        if name == "name":
+            widget = self._name_field()
+        elif name in CHOICES:
+            widget = self._choice_field(name)
+        else:
+            widget = self._file_field()
+        # Captioned fields sit to the right of their caption ("Name:").
+        caption = FIELD_CAPTIONS.get(name)
+        left = self._box_left(caption) if caption else 6
         widget.setStyleSheet(FIELD_STYLE)
         # Embedded widgets are drawn over their window background colour; without this, the square behind the
         # rounded corners shows as dark specks against the node body.
@@ -300,8 +365,8 @@ class NodeItem(QGraphicsItem):
         self.fields.append(proxy)
 
     @staticmethod
-    def _name_box_left() -> int:
-        return 8 + QFontMetrics(QApplication.font()).horizontalAdvance(strings.NAME_CAPTION) + CAPTION_GAP
+    def _box_left(caption: str) -> int:
+        return 8 + QFontMetrics(QApplication.font()).horizontalAdvance(caption) + CAPTION_GAP
 
     def _name_field(self) -> QWidget:
         field = QLineEdit(self.node.values.get("name", ""))
@@ -312,6 +377,24 @@ class NodeItem(QGraphicsItem):
     def show_default_name(self, name: str) -> None:
         """Show `name` greyed out in the empty Name box: what the node is called while the box is blank."""
         self.name_field.setPlaceholderText(name)
+
+    def _choice_field(self, name: str) -> QWidget:
+        field = ChoiceField()
+        labels = {value: label for value, label, _ in CHOICES[name]}
+        for value, label, tip in CHOICES[name]:
+            if value == AUTO:
+                field.addItem(strings.AUTO_LIST_LABEL.format(choice=labels[AUTO_CHOICE[name]]), value)
+                field.setItemData(field.count() - 1, label, ChoiceField.SHORT_LABEL_ROLE)
+            else:
+                field.addItem(label, value)
+            field.setItemData(field.count() - 1, tip, Qt.ToolTipRole)
+        # The opened list may be wider than the box, so longer list labels aren't cut off.
+        field.view().setMinimumWidth(field.view().sizeHintForColumn(0) + 2 * GRID)
+        field.setCurrentIndex(max(field.findData(self.node.values.get(name, "")), 0))
+        field.currentIndexChanged.connect(
+            lambda index: self.scene().set_value(self.node.id, name, field.itemData(index))
+        )
+        return field
 
     def _file_field(self) -> QWidget:
         button = QPushButton()
@@ -360,9 +443,9 @@ class NodeItem(QGraphicsItem):
         painter.setPen(TEXT)
         painter.drawText(title.adjusted(8, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, self.node.type.title)
         for row, name in enumerate(self.node.type.fields, start=1):
-            if name == "name":
+            if name in FIELD_CAPTIONS:
                 caption = QRectF(8, GRID * row, NODE_WIDTH, GRID)
-                painter.drawText(caption, Qt.AlignLeft | Qt.AlignVCenter, strings.NAME_CAPTION)
+                painter.drawText(caption, Qt.AlignLeft | Qt.AlignVCenter, FIELD_CAPTIONS[name])
         half = NODE_WIDTH / 2 - 10
         top = self.first_port_row
         for i, name in enumerate(self.node.type.inputs):
@@ -642,7 +725,7 @@ class EditorView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.NoAnchor)  # _set_zoom keeps its own anchor point fixed
 
         # The scene point in the middle of the view, kept unrounded. Scroll positions are whole pixels, so
-        # re-reading the centre after every resize would drift by half a pixel each time on odd sizes.
+        # re-reading the center after every resize would drift by half a pixel each time on odd sizes.
         self._center = QPointF(0, 0)
         self._recentering = False  # True while the view moves for internal reasons (not a user pan)
         for bar in (self.horizontalScrollBar(), self.verticalScrollBar()):
@@ -663,7 +746,7 @@ class EditorView(QGraphicsView):
     # --- Showing a different graph ---
 
     def set_graph(self, graph: Graph, view: ViewState) -> None:
-        """Show `graph` in a fresh scene, at the given zoom and centre."""
+        """Show `graph` in a fresh scene, at the given zoom and center."""
         self._leave_text_box()
         scene = EditorScene(graph)
         scene.nodes_changed.connect(self.update_bounds)
@@ -676,7 +759,7 @@ class EditorView(QGraphicsView):
     def view_state(self) -> ViewState:
         return ViewState(ZOOM_LEVELS[self._zoom_index], self._center.x(), self._center.y())
 
-    # --- View centre and pan limits ---
+    # --- View center and pan limits ---
 
     def _actual_center(self) -> QPointF:
         size = self.viewport().size()
@@ -806,13 +889,13 @@ class EditorView(QGraphicsView):
         self._set_zoom(ZOOM_LEVELS.index(1.0))
 
     def _set_zoom(self, index: int, anchor: QPoint | None = None) -> None:
-        """Zoom to ZOOM_LEVELS[index], keeping the scene point at `anchor` (default: view centre) in place."""
+        """Zoom to ZOOM_LEVELS[index], keeping the scene point at `anchor` (default: view center) in place."""
         index = max(0, min(len(ZOOM_LEVELS) - 1, index))
         if index == self._zoom_index:
             return
         zoom = ZOOM_LEVELS[index]
         if anchor is not None:
-            # Choose the new centre so the scene point under `anchor` stays under it at the new zoom.
+            # Choose the new center so the scene point under `anchor` stays under it at the new zoom.
             size = self.viewport().size()
             offset = QPointF(anchor) - QPointF(size.width() / 2, size.height() / 2)  # screen px from the middle
             fixed_point = self._center + offset / self.transform().m11()
@@ -828,7 +911,7 @@ class EditorView(QGraphicsView):
             self.setTransform(QTransform.fromScale(zoom, zoom))
         finally:
             self._recentering = False
-        self.update_bounds()  # the limits depend on how much fits on screen; also recentres on self._center
+        self.update_bounds()  # the limits depend on how much fits on screen; also recenters on self._center
         self.controls.show_zoom(index)
         self.zoom_changed.emit(index)
 
