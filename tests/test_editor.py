@@ -1,8 +1,10 @@
 import pytest
 from PySide6.QtCore import QPointF, QRect, Qt
+from PySide6.QtGui import QPalette
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QGraphicsProxyWidget, QLabel, QMenu, QWidgetAction
 
-from editor import FIT_MARGIN, EditorView, add_menu_heading
+from editor import FIT_MARGIN, PLACEHOLDER_TEXT, EditorView, add_menu_heading
 from graph import Graph
 from project import ViewState
 
@@ -106,3 +108,54 @@ def test_node_fields_have_transparent_backgrounds(view):
     assert len(fields) == 2
     assert all(field.testAttribute(Qt.WA_TranslucentBackground) for field in fields)
 
+
+
+def test_blank_output_names_show_their_default_greyed_out(view):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    graph.set_value(song.id, "name", "Song")
+    out = graph.add_node("output", 480, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    field = scene.node_items[out.id].name_field
+    assert field.text() == "" and field.placeholderText() == "Output"
+    assert field.palette().color(QPalette.PlaceholderText) == PLACEHOLDER_TEXT
+
+    scene.connect_ports(scene.node_items[song.id].outputs[0], scene.node_items[out.id].inputs[0])
+    assert field.placeholderText() == "Song"  # follows the wiring
+    scene.node_items[song.id].name_field.setText("Lead")
+    assert field.placeholderText() == "Lead"  # and the source's name
+    field.setText("Vocals")
+    assert graph.nodes[out.id].values["name"] == "Vocals"
+
+
+def test_blank_input_names_show_their_file_name_greyed_out(view, tmp_path):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    field = scene.node_items[song.id].name_field
+    assert field.text() == "" and field.placeholderText() == "Input"
+    scene.set_value(song.id, "file", str(tmp_path / "Want You Gone.mp3"))  # what choosing a file does
+    assert field.placeholderText() == "Want You Gone"
+
+
+def test_tab_moves_between_fields_in_reading_order(view):
+    graph = Graph()
+    below = graph.add_node("output", 480, 0)    # added first, but below and right of the others
+    song = graph.add_node("input", 0, 0)
+    above = graph.add_node("output", 480, -240)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    name, file = scene.node_items[song.id].fields
+    order = [scene.node_items[above.id].fields[0], name, file, scene.node_items[below.id].fields[0]]
+    assert scene.fields_in_order() == order
+
+    QTest.keyClick(view, Qt.Key_Tab)  # from the canvas: the first field
+    seen = [scene.focusItem()]
+    for _ in range(4):
+        QTest.keyClick(view, Qt.Key_Tab)
+        seen.append(scene.focusItem())
+    assert seen == order + order[:1]  # wraps around
+    QTest.keyClick(view, Qt.Key_Backtab, Qt.ShiftModifier)
+    assert scene.focusItem() is order[-1]

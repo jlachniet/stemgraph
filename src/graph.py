@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 
+import strings
+
 GRID = 24
 
 
@@ -14,9 +16,11 @@ class NodeType:
 
 
 NODE_TYPES = {
-    "input": NodeType("Input", (), ("audio",), fields=("name", "file")),
-    "split_mid_side": NodeType("Split Mid/Side", ("audio",), ("mid", "side")),
-    "output": NodeType("Output", ("audio",), (), fields=("name",)),
+    "input": NodeType(strings.NODE_INPUT, (), (strings.PORT_AUDIO,), fields=("name", "file")),
+    "split_mid_side": NodeType(
+        strings.NODE_SPLIT_MID_SIDE, (strings.PORT_AUDIO,), (strings.PORT_MID, strings.PORT_SIDE)
+    ),
+    "output": NodeType(strings.NODE_OUTPUT, (strings.PORT_AUDIO,), (), fields=("name",)),
 }
 
 

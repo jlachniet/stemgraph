@@ -20,6 +20,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 
+import strings
 from graph import NODE_TYPES, Graph
 
 EXTENSION = ".sgp"
@@ -120,26 +121,26 @@ def save(graph: Graph, view: ViewState, path: str) -> None:
 
 def _int(value) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ProjectError("The file contains an invalid value.")
+        raise ProjectError(strings.INVALID_VALUE)
     return value
 
 
 def _number(value) -> float:
     # json accepts NaN and Infinity, which no position or zoom can be.
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        raise ProjectError("The file contains an invalid value.")
+        raise ProjectError(strings.INVALID_VALUE)
     return float(value)
 
 
 def _dict(value) -> dict:
     if not isinstance(value, dict):
-        raise ProjectError("The file contains an invalid value.")
+        raise ProjectError(strings.INVALID_VALUE)
     return value
 
 
 def _list(value) -> list:
     if not isinstance(value, list):
-        raise ProjectError("The file contains an invalid value.")
+        raise ProjectError(strings.INVALID_VALUE)
     return value
 
 
@@ -148,11 +149,11 @@ def loads(text: str, project_path: str) -> tuple[Graph, ViewState]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        raise ProjectError("The file isn't a stemgraph project, or it is damaged.") from None
+        raise ProjectError(strings.NOT_A_PROJECT_OR_DAMAGED) from None
     if not isinstance(data, dict) or data.get("format") != FORMAT:
-        raise ProjectError("The file isn't a stemgraph project.")
+        raise ProjectError(strings.NOT_A_PROJECT)
     if _int(data.get("version")) > VERSION:
-        raise ProjectError("The file was saved by a newer version of stemgraph.")
+        raise ProjectError(strings.NEWER_VERSION)
 
     project_dir = os.path.dirname(os.path.abspath(project_path))
     graph = Graph()
@@ -160,14 +161,14 @@ def loads(text: str, project_path: str) -> tuple[Graph, ViewState]:
         entry = _dict(entry)
         type_key = entry.get("type")
         if type_key not in NODE_TYPES:
-            raise ProjectError(f"The file contains an unknown kind of node: {type_key}.")
+            raise ProjectError(strings.UNKNOWN_NODE.format(type=type_key))
         node_id = _int(entry.get("id"))
         if node_id < 1 or node_id in graph.nodes:
-            raise ProjectError("The file contains an invalid node.")
+            raise ProjectError(strings.INVALID_NODE)
         node = graph.add_node(type_key, _int(entry.get("x")), _int(entry.get("y")), node_id=node_id)
         for name, value in _dict(entry.get("values", {})).items():
             if name not in node.type.fields or not isinstance(value, str):
-                raise ProjectError("The file contains an invalid node.")
+                raise ProjectError(strings.INVALID_NODE)
             graph.set_value(node.id, name, path_from_file(value, project_dir) if name in PATH_FIELDS else value)
 
     for entry in _list(data.get("connections", [])):
@@ -177,7 +178,7 @@ def loads(text: str, project_path: str) -> tuple[Graph, ViewState]:
         # Graph.connect enforces the same rules as the editor; it also silently replaces a wire on the same
         # input, which a valid file never needs.
         if graph.connect(*ends) is None or len(graph.connections) != before + 1:
-            raise ProjectError("The file contains an invalid connection.")
+            raise ProjectError(strings.INVALID_CONNECTION)
 
     view = ViewState()
     if "view" in data:
@@ -185,7 +186,7 @@ def loads(text: str, project_path: str) -> tuple[Graph, ViewState]:
         view.zoom = _number(view_data.get("zoom", 1.0))
         center = _list(view_data.get("center", [0, 0]))
         if len(center) != 2 or view.zoom <= 0:
-            raise ProjectError("The file contains an invalid value.")
+            raise ProjectError(strings.INVALID_VALUE)
         view.center_x, view.center_y = (_number(v) for v in center)
     return graph, view
 
@@ -197,5 +198,5 @@ def load(path: str) -> tuple[Graph, ViewState]:
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise ProjectError("The file isn't a stemgraph project, or it is damaged.") from None
+        raise ProjectError(strings.NOT_A_PROJECT_OR_DAMAGED) from None
     return loads(text, path)

@@ -330,8 +330,8 @@ def view_menu(w: MainWindow):
     return w.menuBar().actions()[1].menu()
 
 
-def test_menu_bar_has_file_then_view(win):
-    assert [a.text() for a in win.menuBar().actions()] == ["&File", "&View"]
+def test_menu_bar_has_file_view_then_build(win):
+    assert [a.text() for a in win.menuBar().actions()] == ["&File", "&View", "&Build"]
 
 
 def test_view_menu_items_and_shortcuts(win):

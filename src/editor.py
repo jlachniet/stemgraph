@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QLineF, QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, Signal
+from PySide6.QtCore import QByteArray, QEvent, QLineF, QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFontMetrics,
@@ -34,12 +34,13 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
+import build
+import strings
 from graph import GRID, NODE_TYPES, Connection, Graph, Node, snap
 from project import ViewState
 
 NODE_WIDTH = 8 * GRID
 PORT_RADIUS = 6
-NAME_CAPTION = "Name:"
 CAPTION_GAP = 8  # space between a caption and its text box
 ZOOM_LEVELS = (0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0)
 WHEEL_NOTCH = 120  # angleDelta of one mouse-wheel notch
@@ -72,6 +73,7 @@ NODE_TITLE = QColor("#313131")   # gray-5
 NODE_BORDER = QColor("#484848")  # gray-7
 WIRE = QColor("#6e6e6e")         # gray-9
 TEXT = QColor("#eeeeec")         # sand-12
+PLACEHOLDER_TEXT = QColor("#b4b4b4")  # gray-11, low-contrast text
 PORT = QColor("#70b8ff")         # blue-11
 SELECTED = QColor("#eeeeee")     # gray-12
 FIELD_BACKGROUND = "#191919"     # gray-2
@@ -87,7 +89,8 @@ QLineEdit, QPushButton {{
     border: 1px solid {FIELD_BORDER}; border-radius: 3px;
     padding: 0 4px; text-align: left;
 }}
-QLineEdit {{ padding: 0 1px; }}  /* QLineEdit adds its own ~3px text margin; this lines its text up with buttons */
+/* QLineEdit adds its own ~3px text margin; the padding lines its text up with buttons */
+QLineEdit {{ padding: 0 1px; placeholder-text-color: {PLACEHOLDER_TEXT.name()}; }}
 QLineEdit:focus, QPushButton:hover {{ border-color: {FIELD_BORDER_ACTIVE}; }}
 """
 
@@ -104,6 +107,7 @@ QPushButton#segment_last {{ border-top-left-radius: 0; border-bottom-left-radius
 QPushButton#segment_first:hover, QPushButton#segment_middle:hover, QPushButton#segment_last:hover {{
     border-color: {FIELD_BORDER}; background: {HOVER_BACKGROUND};
 }}
+QPushButton#build {{ padding: 0 10px 0 6px; }}
 """
 
 MENU_BAR_BACKGROUND = "#222222"  # gray-3
@@ -136,9 +140,15 @@ QMenu::right-arrow {{ width: 8px; height: 8px; right: 14px; }}
 QLabel#menu_heading {{ color: {MENU_HEADING}; background: transparent; padding: 4px 24px 2px 16px; }}
 """
 
+FIELD_SCROLL_MARGIN = 2 * GRID  # Tab scrolls a field at least this far inside the view
+
 LAST_AUDIO_DIR_KEY = "last_audio_dir"  # QSettings key: folder the file picker last chose from
 # Common formats that soundfile (libsndfile) can read, alphabetical; it has no M4A/AAC support.
-AUDIO_FILTER = "Audio Files (*.aif *.aiff *.flac *.mp3 *.ogg *.opus *.wav);;All Files (*)"
+AUDIO_EXTENSIONS = ("aif", "aiff", "flac", "mp3", "ogg", "opus", "wav")
+AUDIO_FILTER = ";;".join([
+    strings.AUDIO_FILES_FILTER.format(patterns=" ".join(f"*.{e}" for e in AUDIO_EXTENSIONS)),
+    strings.ALL_FILES_FILTER,
+])
 
 
 def app_settings() -> QSettings:
@@ -269,6 +279,7 @@ class NodeItem(QGraphicsItem):
             | QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setPos(node.x, node.y)
+        self.fields: list[QGraphicsProxyWidget] = []  # top to bottom
         for row, name in enumerate(node.type.fields, start=1):
             self._add_field(row, name)
         self.inputs = [PortItem(self, False, i) for i in range(len(node.type.inputs))]
@@ -286,15 +297,21 @@ class NodeItem(QGraphicsItem):
         proxy = QGraphicsProxyWidget(self)
         proxy.setWidget(widget)
         proxy.setPos(left, GRID * row + 2)
+        self.fields.append(proxy)
 
     @staticmethod
     def _name_box_left() -> int:
-        return 8 + QFontMetrics(QApplication.font()).horizontalAdvance(NAME_CAPTION) + CAPTION_GAP
+        return 8 + QFontMetrics(QApplication.font()).horizontalAdvance(strings.NAME_CAPTION) + CAPTION_GAP
 
     def _name_field(self) -> QWidget:
         field = QLineEdit(self.node.values.get("name", ""))
         field.textChanged.connect(lambda text: self.scene().set_value(self.node.id, "name", text))
+        self.name_field = field
         return field
+
+    def show_default_name(self, name: str) -> None:
+        """Show `name` greyed out in the empty Name box: what the node is called while the box is blank."""
+        self.name_field.setPlaceholderText(name)
 
     def _file_field(self) -> QWidget:
         button = QPushButton()
@@ -306,7 +323,7 @@ class NodeItem(QGraphicsItem):
         window = self.scene().views()[0]
         settings = app_settings()
         start_dir = settings.value(LAST_AUDIO_DIR_KEY, "")
-        path, _ = QFileDialog.getOpenFileName(window, "Choose Audio File", start_dir, AUDIO_FILTER)
+        path, _ = QFileDialog.getOpenFileName(window, strings.CHOOSE_AUDIO_TITLE, start_dir, AUDIO_FILTER)
         if path:
             settings.setValue(LAST_AUDIO_DIR_KEY, str(Path(path).parent))
             self.scene().set_value(self.node.id, "file", path)
@@ -319,7 +336,7 @@ class NodeItem(QGraphicsItem):
             button.setText(text)
             button.setToolTip(path)
         else:
-            button.setText("Choose file…")
+            button.setText(strings.CHOOSE_FILE)
 
     def boundingRect(self) -> QRectF:
         return self.rect.adjusted(-1, -1, 1, 1)
@@ -345,7 +362,7 @@ class NodeItem(QGraphicsItem):
         for row, name in enumerate(self.node.type.fields, start=1):
             if name == "name":
                 caption = QRectF(8, GRID * row, NODE_WIDTH, GRID)
-                painter.drawText(caption, Qt.AlignLeft | Qt.AlignVCenter, NAME_CAPTION)
+                painter.drawText(caption, Qt.AlignLeft | Qt.AlignVCenter, strings.NAME_CAPTION)
         half = NODE_WIDTH / 2 - 10
         top = self.first_port_row
         for i, name in enumerate(self.node.type.inputs):
@@ -402,6 +419,17 @@ class EditorScene(QGraphicsScene):
         for node in graph.nodes.values():
             self._add_item(node)
         self.sync_wires()
+        self.edited.connect(self.update_default_names)
+        self.update_default_names()
+
+    def update_default_names(self) -> None:
+        """Refresh what blank Name boxes show. An Input's depends on its file; an Output's on its wiring, the
+        names upstream, and the other Outputs."""
+        for node in self.graph.nodes.values():
+            if node.type_key == "input":
+                self.node_items[node.id].show_default_name(build.input_name(node))
+        for node_id, name in build.output_names(self.graph).items():
+            self.node_items[node_id].show_default_name(name)
 
     def nodes_rect(self) -> QRectF:
         """The area covered by all nodes, or the origin if there are none."""
@@ -425,7 +453,7 @@ class EditorScene(QGraphicsScene):
             super().contextMenuEvent(event)  # e.g. a text box's own copy/paste menu
             return
         menu = QMenu()
-        add_menu_heading(menu, "Add Node")
+        add_menu_heading(menu, strings.ADD_NODE_HEADING)
         for i, group in enumerate(MENU_GROUPS):
             if i:
                 menu.addSeparator()
@@ -434,6 +462,31 @@ class EditorScene(QGraphicsScene):
         chosen = menu.exec(event.screenPos())
         if chosen:
             self.add_node(chosen.data(), pos)
+
+    def fields_in_order(self) -> list[QGraphicsProxyWidget]:
+        """Every node's fields in reading order: nodes top to bottom then left to right, fields top to bottom."""
+        items = sorted(self.node_items.values(), key=lambda item: (item.y(), item.x(), item.node.id))
+        return [field for item in items for field in item.fields]
+
+    def focus_next_field(self, next: bool) -> bool:
+        """Move focus to the next (or previous) field in reading order, wrapping around, and scroll it into view.
+        From outside the fields, start at the first (or last). Returns False if there are no fields."""
+        fields = self.fields_in_order()
+        if not fields:
+            return False
+        current = self.focusItem()
+        if current in fields:
+            index = (fields.index(current) + (1 if next else -1)) % len(fields)
+        else:
+            index = 0 if next else len(fields) - 1
+        field = fields[index]
+        field.setFocus(Qt.TabFocusReason if next else Qt.BacktabFocusReason)
+        for view in self.views():
+            view.ensureVisible(field, FIELD_SCROLL_MARGIN, FIELD_SCROLL_MARGIN)
+        return True
+
+    def focusNextPrevChild(self, next: bool) -> bool:
+        return self.focus_next_field(next)
 
     def keyPressEvent(self, event) -> None:
         typing = isinstance(self.focusItem(), QGraphicsProxyWidget)
@@ -504,12 +557,12 @@ class CanvasControls(QWidget):
 
     def __init__(self, view: "EditorView") -> None:
         super().__init__(view)
-        self.edit_mode = self._button("cursor-arrow", "Edit mode (V)", lambda: view.set_mode(EDIT))
-        self.drag_mode = self._button("hand", "Drag mode (H, or hold Space)", lambda: view.set_mode(DRAG))
-        self.zoom_out = self._button("zoom-out", "Zoom out (Ctrl+-)", view.zoom_out)
-        self.reset = self._button(None, "Reset zoom to 100% (Ctrl+0)", view.reset_zoom, width=2 * CONTROL_SIZE)
-        self.reset.setText("100%")
-        self.zoom_in = self._button("zoom-in", "Zoom in (Ctrl+=)", view.zoom_in)
+        self.edit_mode = self._button("cursor-arrow", strings.EDIT_MODE_TIP, lambda: view.set_mode(EDIT))
+        self.drag_mode = self._button("hand", strings.DRAG_MODE_TIP, lambda: view.set_mode(DRAG))
+        self.zoom_out = self._button("zoom-out", strings.ZOOM_OUT_TIP, view.zoom_out)
+        self.reset = self._button(None, strings.RESET_ZOOM_TIP, view.reset_zoom, width=2 * CONTROL_SIZE)
+        self.reset.setText(strings.ZOOM_PERCENT.format(percent=100))
+        self.zoom_in = self._button("zoom-in", strings.ZOOM_IN_TIP, view.zoom_in)
         for button in (self.edit_mode, self.drag_mode):
             button.setCheckable(True)
 
@@ -548,9 +601,25 @@ class CanvasControls(QWidget):
         self.drag_mode.setChecked(mode == DRAG)
 
     def show_zoom(self, index: int) -> None:
-        self.reset.setText(f"{round(ZOOM_LEVELS[index] * 100)}%")
+        self.reset.setText(strings.ZOOM_PERCENT.format(percent=round(ZOOM_LEVELS[index] * 100)))
         self.zoom_out.setEnabled(index > 0)
         self.zoom_in.setEnabled(index < len(ZOOM_LEVELS) - 1)
+
+
+def build_button(view: "EditorView") -> QPushButton:
+    """The "▶ Build" button in the bottom-left corner of the canvas."""
+    button = QPushButton(strings.BUILD_BUTTON, view)
+    button.setObjectName("build")
+    box = CONTROL_SIZE - 2  # inside the 1px border
+    button.setIcon(load_icon("play", box))
+    button.setIconSize(QSize(box, box))
+    button.setToolTip(strings.BUILD_TIP)
+    button.setFixedHeight(CONTROL_SIZE)
+    button.setFocusPolicy(Qt.NoFocus)  # keep keyboard focus (e.g. Delete) on the canvas
+    button.setStyleSheet(CONTROLS_STYLE)
+    button.clicked.connect(view.build_requested)
+    button.adjustSize()
+    return button
 
 
 class EditorView(QGraphicsView):
@@ -559,6 +628,7 @@ class EditorView(QGraphicsView):
     scene_replaced = Signal()  # set_graph put a new EditorScene in the view
     zoom_changed = Signal(int)  # index into ZOOM_LEVELS
     mode_changed = Signal(str)  # the chosen cursor mode (EDIT or DRAG), not counting Space held down
+    build_requested = Signal()  # the Build button was clicked
 
     def __init__(self, graph: Graph) -> None:
         scene = EditorScene(graph)
@@ -588,6 +658,7 @@ class EditorView(QGraphicsView):
 
         self.controls = CanvasControls(self)
         self.controls.show_mode(EDIT)
+        self.build_button = build_button(self)
 
     # --- Showing a different graph ---
 
@@ -673,6 +744,16 @@ class EditorView(QGraphicsView):
             self.viewport().setCursor(Qt.OpenHandCursor)
         else:
             self.viewport().unsetCursor()
+
+    def event(self, event) -> bool:
+        # Tab and Shift+Tab move between node fields in reading order. The fields live in the scene, so the view
+        # keeps keyboard focus and would otherwise use Qt's order: the order the nodes were added.
+        if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Tab, Qt.Key_Backtab):
+            if not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+                backwards = event.key() == Qt.Key_Backtab or event.modifiers() & Qt.ShiftModifier
+                if self.scene().focus_next_field(not backwards):
+                    return True
+        return super().event(event)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Space and not self._typing():
@@ -769,6 +850,7 @@ class EditorView(QGraphicsView):
             self.width() - self.controls.width() - CONTROLS_MARGIN,
             self.height() - self.controls.height() - CONTROLS_MARGIN,
         )
+        self.build_button.move(CONTROLS_MARGIN, self.height() - self.build_button.height() - CONTROLS_MARGIN)
 
     # --- Mouse: middle-drag always pans; in Drag mode left-drag pans and nothing in the scene can be clicked ---
 
