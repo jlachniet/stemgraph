@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QStandardPaths, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
 
 import build
 import strings
-from editor import DRAG, EDIT, ZOOM_LEVELS, EditorView, app_settings
+from editor import DRAG, EDIT, EDIT_SHORTCUTS, ZOOM_LEVELS, EditorScene, EditorView, app_settings
 from graph import Graph
 from progress import ProgressDialog
 from project import EXTENSION, ProjectError, ViewState, load, save, snapshot
@@ -122,11 +123,11 @@ class MainWindow(QMainWindow):
         self.view = EditorView(Graph())
         self.view.scene_replaced.connect(self._watch_scene)
         self.setCentralWidget(self.view)
+        self._build_menu()
         self._watch_scene()
         self.view.build_requested.connect(self.build)
         self._saved = snapshot(self.view.scene().graph)
         self._export_dir: str | None = None  # folder the open project was built to in this session
-        self._build_menu()
         self._update_title()
 
     # --- Menu ---
@@ -145,6 +146,23 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         self._action(menu, strings.MENU_EXIT, "Ctrl+Q", self.close)
         self._update_recent_menu()
+
+        menu = self.menuBar().addMenu(strings.MENU_EDIT)
+        self.edit_actions: dict[str, QAction] = {}
+        for group in [
+            [("undo", strings.MENU_UNDO), ("redo", strings.MENU_REDO)],
+            [("cut", strings.MENU_CUT), ("copy", strings.MENU_COPY), ("paste", strings.MENU_PASTE),
+             ("duplicate", strings.MENU_DUPLICATE), ("delete", strings.MENU_DELETE)],
+            [("select_all", strings.MENU_SELECT_ALL)],
+        ]:
+            if self.edit_actions:
+                menu.addSeparator()
+            for command, text in group:
+                keys = EDIT_SHORTCUTS[command]
+                slot = lambda checked=False, c=command: self.edit(c)  # noqa: E731
+                self.edit_actions[command] = self._action(menu, text, keys[0], slot, *keys[1:])
+        menu.aboutToShow.connect(self._update_edit_actions)
+        QApplication.clipboard().dataChanged.connect(self._update_edit_actions)
 
         menu = self.menuBar().addMenu(strings.MENU_VIEW)
         self.zoom_in_action = self._action(menu, strings.MENU_ZOOM_IN, "Ctrl+=", self.view.zoom_in, "Ctrl++")
@@ -174,6 +192,45 @@ class MainWindow(QMainWindow):
         menu.addAction(action)
         return action
 
+    def edit(self, command: str) -> None:
+        """Do an Edit menu command: on the text while typing in a Name box, otherwise on the graph."""
+        field = self.view.text_field()
+        if field:
+            text_commands = {
+                "undo": field.undo, "redo": field.redo, "cut": field.cut, "copy": field.copy,
+                "paste": field.paste, "delete": field.del_, "select_all": field.selectAll,
+            }
+            if command in text_commands:
+                text_commands[command]()
+            return
+        scene = self.view.scene()
+        if command == "paste":
+            scene.paste(self.view.mouse_scene_pos())
+        else:
+            getattr(scene, "delete_selected" if command == "delete" else command)()
+
+    def _update_edit_actions(self) -> None:
+        if not isinstance(self.view.scene(), EditorScene):
+            return  # the scene is being destroyed as the app quits, and still sends selectionChanged
+        field = self.view.text_field()
+        if field:
+            selected = field.hasSelectedText()
+            enabled = {
+                "undo": field.isUndoAvailable(), "redo": field.isRedoAvailable(), "cut": selected, "copy": selected,
+                "paste": bool(QApplication.clipboard().text()), "duplicate": False, "delete": selected,
+                "select_all": bool(field.text()),
+            }
+        else:
+            scene = self.view.scene()
+            nodes = scene.has_selected_nodes()
+            enabled = {
+                "undo": scene.can_undo(), "redo": scene.can_redo(), "cut": nodes, "copy": nodes,
+                "paste": scene.can_paste(), "duplicate": nodes, "delete": bool(scene.selectedItems()),
+                "select_all": bool(scene.graph.nodes),
+            }
+        for command, action in self.edit_actions.items():
+            action.setEnabled(enabled[command])
+
     def _show_zoom(self, index: int) -> None:
         self.zoom_in_action.setEnabled(index < len(ZOOM_LEVELS) - 1)
         self.zoom_out_action.setEnabled(index > 0)
@@ -184,7 +241,11 @@ class MainWindow(QMainWindow):
     # --- Title and unsaved changes ---
 
     def _watch_scene(self) -> None:
-        self.view.scene().edited.connect(self._update_title)
+        scene = self.view.scene()
+        scene.edited.connect(self._update_title)
+        for signal in (scene.edited, scene.history_changed, scene.selectionChanged, scene.focusItemChanged):
+            signal.connect(self._update_edit_actions)
+        self._update_edit_actions()
 
     def is_modified(self) -> bool:
         return snapshot(self.view.scene().graph) != self._saved

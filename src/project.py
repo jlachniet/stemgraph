@@ -42,12 +42,7 @@ class ViewState:
 
 def snapshot(graph: Graph) -> tuple:
     """Everything about a graph that saving would record. Two graphs with equal snapshots save the same."""
-    nodes = tuple(
-        (n.id, n.type_key, n.x, n.y, tuple(sorted((k, v) for k, v in n.values.items() if v)))
-        for n in sorted(graph.nodes.values(), key=lambda n: n.id)
-    )
-    connections = tuple(sorted((c.src, c.src_output, c.dst, c.dst_input) for c in graph.connections))
-    return nodes, connections
+    return graph.state()
 
 
 # --- Paths ---

@@ -327,11 +327,11 @@ def test_clear_recent_empties_and_disables_menu(win, tmp_path):
 
 
 def view_menu(w: MainWindow):
-    return w.menuBar().actions()[1].menu()
+    return w.menuBar().actions()[2].menu()
 
 
-def test_menu_bar_has_file_view_then_help(win):
-    assert [a.text() for a in win.menuBar().actions()] == ["&File", "&View", "&Help"]
+def test_menu_bar_has_file_edit_view_then_help(win):
+    assert [a.text() for a in win.menuBar().actions()] == ["&File", "&Edit", "&View", "&Help"]
 
 
 def test_view_menu_items_and_shortcuts(win):
@@ -394,6 +394,125 @@ def test_typing_mode_keys_in_a_name_box_types_them(win, qapp):
         QTest.keyClick(qapp.focusWidget(), key)
     assert name_box.text() == "vh"
     assert view.mode() == "edit"
+
+
+# --- Edit menu ---
+
+
+def edit_menu(w: MainWindow):
+    return w.menuBar().actions()[1].menu()
+
+
+def enabled_edit_items(w: MainWindow) -> set[str]:
+    w._update_edit_actions()
+    return {command for command, action in w.edit_actions.items() if action.isEnabled()}
+
+
+def type_in_name_box(w: MainWindow, qapp, text: str) -> QLineEdit:
+    proxy = next(item for item in w.view.scene().items() if isinstance(item, QGraphicsProxyWidget))
+    click_at = w.view.mapFromScene(proxy.sceneBoundingRect().center())
+    QTest.mouseClick(w.view.viewport(), Qt.LeftButton, Qt.NoModifier, click_at)
+    QTest.keyClicks(qapp.focusWidget(), text)
+    return proxy.widget()
+
+
+def test_edit_menu_items_and_shortcuts(win):
+    items = [(a.text(), [k.toString() for k in a.shortcuts()]) for a in edit_menu(win).actions()]
+    assert items == [
+        ("&Undo", ["Ctrl+Z"]),
+        ("&Redo", ["Ctrl+Y"]),
+        ("", []),
+        ("Cu&t", ["Ctrl+X"]),
+        ("&Copy", ["Ctrl+C"]),
+        ("&Paste", ["Ctrl+V"]),
+        ("&Duplicate", ["Ctrl+D"]),
+        ("De&lete", ["Del", "Backspace"]),
+        ("", []),
+        ("Select &All", ["Ctrl+A"]),
+    ]
+
+
+def test_edit_items_are_greyed_out_when_they_do_nothing(win, qapp):
+    qapp.clipboard().setText("")
+    assert enabled_edit_items(win) == set()
+    add_node(win, "input")
+    add_node(win, "output", 480, 0)
+    assert enabled_edit_items(win) == {"undo", "select_all"}
+    scene = win.view.scene()
+    a, b = (scene.node_items[i] for i in (1, 2))
+    scene.connect_ports(a.outputs[0], b.inputs[0])
+    scene.clearSelection()
+    next(iter(scene.wire_items.values())).setSelected(True)
+    assert enabled_edit_items(win) == {"undo", "delete", "select_all"}  # a wire alone can only be deleted
+    a.setSelected(True)
+    assert enabled_edit_items(win) == {"undo", "cut", "copy", "duplicate", "delete", "select_all"}
+    scene.copy()
+    scene.undo()
+    assert "paste" in enabled_edit_items(win) and "redo" in enabled_edit_items(win)
+
+
+def test_edit_shortcuts_act_on_the_graph(win):
+    add_node(win, "output", 0, 0)
+    view = win.view
+    QTest.keyClick(view, Qt.Key_A, Qt.ControlModifier)
+    QTest.keyClick(view, Qt.Key_D, Qt.ControlModifier)
+    assert node_count(win) == 2
+    QTest.keyClick(view, Qt.Key_Backspace)
+    assert node_count(win) == 1
+    QTest.keyClick(view, Qt.Key_Z, Qt.ControlModifier)
+    assert node_count(win) == 2
+    QTest.keyClick(view, Qt.Key_Y, Qt.ControlModifier)
+    assert node_count(win) == 1
+    QTest.keyClick(view, Qt.Key_A, Qt.ControlModifier)
+    QTest.keyClick(view, Qt.Key_Delete)
+    assert node_count(win) == 0
+
+
+def test_edit_commands_act_on_the_text_while_typing(win, qapp):
+    add_node(win)
+    box = type_in_name_box(win, qapp, "abc")
+    focus = qapp.focusWidget()
+    QTest.keyClick(focus, Qt.Key_A, Qt.ControlModifier)
+    assert box.selectedText() == "abc"
+    QTest.keyClick(focus, Qt.Key_C, Qt.ControlModifier)
+    assert qapp.clipboard().text() == "abc"
+    QTest.keyClick(focus, Qt.Key_End)
+    QTest.keyClick(focus, Qt.Key_Backspace)
+    assert box.text() == "ab" and node_count(win) == 1
+    QTest.keyClick(focus, Qt.Key_Z, Qt.ControlModifier)
+    assert box.text() == "abc"
+    QTest.keyClick(focus, Qt.Key_D, Qt.ControlModifier)  # Duplicate does nothing while typing
+    assert node_count(win) == 1
+    win.edit_actions["paste"].trigger()  # the menu item too
+    assert box.text() == "abcabc"
+
+
+def test_undo_back_to_the_saved_state_clears_the_unsaved_marker(win, file_dialogs, tmp_path):
+    add_node(win)
+    file_dialogs(save=str(tmp_path / "song.sgp"))
+    win.save()
+    add_node(win, "input", 480, 0)
+    assert win.isWindowModified()
+    win.edit("undo")
+    assert not win.isWindowModified()
+    win.edit("redo")
+    assert win.isWindowModified()
+
+
+def test_new_project_has_no_undo_history(win, prompts):
+    add_node(win)
+    prompts.answers = [DISCARD]
+    win.new()
+    assert "undo" not in enabled_edit_items(win)
+
+
+def test_paste_from_the_menu_lands_next_to_the_copied_nodes(win):
+    add_node(win, "output", 0, 0)
+    scene = win.view.scene()
+    scene.select_all()
+    win.edit("copy")
+    win.edit("paste")  # the mouse isn't over the canvas
+    assert sorted((n.x, n.y) for n in scene.graph.nodes.values()) == [(0, 0), (24, 24)]
 
 
 # --- The app's own dialogs ---

@@ -1,5 +1,6 @@
 """Node graph model: node types, nodes, connections and the rules between them. No Qt."""
 
+import re
 from dataclasses import dataclass, field
 
 import strings
@@ -132,6 +133,72 @@ class Graph:
     def disconnect(self, connection: Connection) -> None:
         self.connections.discard(connection)
 
+    # --- Whole-graph state, for undo ---
+
+    def state(self) -> tuple:
+        """Everything about the graph that saving would record, as a hashable value. Blank values are left out, so
+        a value cleared again counts as never set. `set_state` puts a graph back to a state."""
+        nodes = tuple(
+            (n.id, n.type_key, n.x, n.y, tuple(sorted((k, v) for k, v in n.values.items() if v)))
+            for n in sorted(self.nodes.values(), key=lambda n: n.id)
+        )
+        connections = tuple(sorted((c.src, c.src_output, c.dst, c.dst_input) for c in self.connections))
+        return nodes, connections
+
+    def set_state(self, state: tuple) -> None:
+        nodes, connections = state
+        self.nodes = {
+            node_id: Node(node_id, type_key, x, y, dict(values)) for node_id, type_key, x, y, values in nodes
+        }
+        self.connections = {Connection(*c) for c in connections}
+        self._next_id = max([self._next_id, *(node_id + 1 for node_id in self.nodes)])
+
+    # --- Copy and paste ---
+
+    def fragment(self, node_ids) -> dict:
+        """The given nodes and the connections between them, as JSON-ready data for the clipboard."""
+        ids = set(node_ids)
+        nodes = [
+            {"id": n.id, "type": n.type_key, "x": n.x, "y": n.y, "values": {k: v for k, v in n.values.items() if v}}
+            for n in sorted(self.nodes.values(), key=lambda n: n.id) if n.id in ids
+        ]
+        connections = [
+            [c.src, c.src_output, c.dst, c.dst_input]
+            for c in sorted(self.connections, key=lambda c: (c.src, c.src_output, c.dst, c.dst_input))
+            if c.src in ids and c.dst in ids
+        ]
+        return {"format": FRAGMENT_FORMAT, "nodes": nodes, "connections": connections}
+
+    def paste(self, piece: "Graph", x: float, y: float) -> list[int]:
+        """Add a copy of every node and connection in `piece`, with the top-left node corner at (x, y). Typed names
+        that are already taken get numbered ("Vocals 2"). Returns the new nodes' ids."""
+        if not piece.nodes:
+            return []
+        left = min(n.x for n in piece.nodes.values())
+        top = min(n.y for n in piece.nodes.values())
+        new_ids = {}
+        for old in sorted(piece.nodes.values(), key=lambda n: n.id):
+            node = self.add_node(old.type_key, old.x - left + x, old.y - top + y)
+            new_ids[old.id] = node.id
+            for name, value in old.values.items():
+                if name == "name" and value:
+                    value = self._free_name(old.type_key, value)
+                self.set_value(node.id, name, value)
+        for c in piece.connections:
+            self.connect(new_ids[c.src], c.src_output, new_ids[c.dst], c.dst_input)
+        return list(new_ids.values())
+
+    def _free_name(self, type_key: str, name: str) -> str:
+        """`name`, or if another node of that type already has it, the first free numbered version of it."""
+        taken = {n.values.get("name", "").casefold() for n in self.nodes.values() if n.type_key == type_key}
+        if name.casefold() not in taken:
+            return name
+        match = re.fullmatch(r"(.*\S) (\d+)", name)
+        base, number = (match[1], int(match[2]) + 1) if match else (name, 2)
+        while (candidate := strings.NUMBERED_NAME.format(name=base, number=number)).casefold() in taken:
+            number += 1
+        return candidate
+
     def _reaches(self, start: int, target: int) -> bool:
         """True if target is start or is downstream of it."""
         stack, seen = [start], set()
@@ -143,3 +210,30 @@ class Graph:
                 seen.add(node_id)
                 stack.extend(c.dst for c in self.connections if c.src == node_id)
         return False
+
+
+FRAGMENT_FORMAT = "stemgraph-nodes"
+
+
+def load_fragment(data) -> Graph | None:
+    """The nodes and connections in clipboard data made by `Graph.fragment`, or None if it isn't valid. The data
+    may come from another copy of stemgraph, maybe another version, so nothing about it is trusted."""
+    try:
+        if data.get("format") != FRAGMENT_FORMAT:
+            return None
+        piece = Graph()
+        for entry in data["nodes"]:
+            ints = [entry["id"], entry["x"], entry["y"]]
+            if any(isinstance(v, bool) or not isinstance(v, int) for v in ints):
+                return None
+            node = piece.add_node(entry["type"], entry["x"], entry["y"], node_id=entry["id"])
+            for name, value in entry["values"].items():
+                if not isinstance(value, str):
+                    return None
+                piece.set_value(node.id, name, value)
+        for entry in data["connections"]:
+            if len(entry) != 4 or piece.connect(*entry) is None:
+                return None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    return piece if piece.nodes else None

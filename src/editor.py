@@ -1,13 +1,32 @@
 """Qt view of the node graph: canvas, nodes, ports and wires."""
 
+import json
+import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QLineF, QPoint, QPointF, QRect, QRectF, QSettings, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QLineF,
+    QMimeData,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSettings,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
+    QAction,
     QColor,
+    QCursor,
     QFontMetrics,
     QIcon,
     QImage,
+    QKeySequence,
     QPainter,
     QPainterPath,
     QPainterPathStroker,
@@ -40,7 +59,7 @@ from PySide6.QtWidgets import (
 
 import build
 import strings
-from graph import AUTO, AUTO_CHOICE, CHOICES, GRID, NODE_TYPES, Connection, Graph, Node, snap
+from graph import AUTO, AUTO_CHOICE, CHOICES, GRID, NODE_TYPES, Connection, Graph, Node, load_fragment, snap
 from project import ViewState
 
 NODE_WIDTH = 8 * GRID
@@ -62,6 +81,23 @@ CONTROL_GROUP_GAP = 8  # extra space between the mode buttons and the zoom butto
 # Cursor modes
 EDIT = "edit"  # click, move, connect and type
 DRAG = "drag"  # left-drag pans the canvas; nothing in the scene can be clicked
+
+# Edit commands: shortcuts, used by the main window's Edit menu and shown in the right-click menus.
+EDIT_SHORTCUTS = {
+    "undo": ("Ctrl+Z",),
+    "redo": ("Ctrl+Y",),
+    "cut": ("Ctrl+X",),
+    "copy": ("Ctrl+C",),
+    "paste": ("Ctrl+V",),
+    "duplicate": ("Ctrl+D",),
+    "delete": ("Del", "Backspace"),
+    "select_all": ("Ctrl+A",),
+}
+CLIPBOARD_FORMAT = "application/x-stemgraph-nodes"  # MIME type of copied nodes: Graph.fragment as UTF-8 JSON
+BAND_FILL_ALPHA = 38  # selection box fill: the selection colour at about 15% opacity
+BAND_SCROLL_MARGIN = GRID  # screen px from the window edge where dragging a selection box starts scrolling
+BAND_SCROLL_MAX = 40  # fastest selection-box scrolling, in screen px per tick
+BAND_SCROLL_INTERVAL = 16  # ms between selection-box scrolling ticks
 
 # Right-click "add node" menu, with a divider between groups.
 MENU_GROUPS = [
@@ -228,6 +264,39 @@ def add_menu_heading(menu: QMenu, text: str) -> None:
     menu.addSeparator()
 
 
+def clipboard_fragment() -> tuple[Graph, str] | None:
+    """The copied nodes on the clipboard and the id of that copy, or None if it holds no stemgraph nodes."""
+    mime = QApplication.clipboard().mimeData()
+    if mime is None or not mime.hasFormat(CLIPBOARD_FORMAT):
+        return None
+    try:
+        data = json.loads(bytes(mime.data(CLIPBOARD_FORMAT)).decode("utf-8"))
+    except ValueError:  # includes UnicodeDecodeError
+        return None
+    piece = load_fragment(data)
+    return (piece, str(data.get("copy", ""))) if piece else None
+
+
+class ShiftSelects:
+    """For selectable items: Shift+click adds the item to the selection. Qt itself makes a plain click select
+    just the item (or, on an already selected item, keep the selection so it can all be dragged) and Ctrl+click
+    toggle it."""
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and event.modifiers() & Qt.ShiftModifier:
+            self.setSelected(True)
+            event.setModifiers(event.modifiers() | Qt.ControlModifier)  # so Qt leaves the rest selected
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        shift = event.button() == Qt.LeftButton and bool(event.modifiers() & Qt.ShiftModifier)
+        if shift:
+            event.setModifiers(event.modifiers() | Qt.ControlModifier)
+        super().mouseReleaseEvent(event)
+        if shift:
+            self.setSelected(True)  # a Ctrl+click without dragging toggled it off again
+
+
 def wire_path(start: QPointF, end: QPointF) -> QPainterPath:
     """A horizontal S-curve from an output (start) to an input (end)."""
     bend = max(abs(end.x() - start.x()) / 2, 2 * GRID)
@@ -324,7 +393,7 @@ class ChoiceField(QComboBox):
         painter.end()
 
 
-class NodeItem(QGraphicsItem):
+class NodeItem(ShiftSelects, QGraphicsItem):
     def __init__(self, node: Node) -> None:
         super().__init__()
         self.node = node
@@ -371,6 +440,7 @@ class NodeItem(QGraphicsItem):
     def _name_field(self) -> QWidget:
         field = QLineEdit(self.node.values.get("name", ""))
         field.textChanged.connect(lambda text: self.scene().set_value(self.node.id, "name", text))
+        field.editingFinished.connect(lambda: self.scene() and self.scene().commit())  # typing is one undo step
         self.name_field = field
         return field
 
@@ -463,7 +533,7 @@ class NodeItem(QGraphicsItem):
         return super().itemChange(change, value)
 
 
-class WireItem(QGraphicsPathItem):
+class WireItem(ShiftSelects, QGraphicsPathItem):
     def __init__(self, connection: Connection, src: PortItem, dst: PortItem) -> None:
         super().__init__()
         self.connection = connection
@@ -491,14 +561,27 @@ class WireItem(QGraphicsPathItem):
 
 
 class EditorScene(QGraphicsScene):
+    """The graph's items, and the edits made to them: undo history, clipboard and right-click menus.
+
+    Each finished edit calls `commit`, which records everything changed since the previous commit as one undo step.
+    """
+
     nodes_changed = Signal()  # a node was added, moved or removed
     edited = Signal()  # the user changed the graph (it may have changed back to how it was)
+    history_changed = Signal()  # an undo step was added, undone or redone
+    reveal = Signal(QRectF)  # undo or redo changed this area; show it if it's off-screen
+
+    # The clipboard copy pasted last and how many times, so each paste of it lands one grid cell further on.
+    _pasted: tuple[str, int] = ("", 0)
 
     def __init__(self, graph: Graph) -> None:
         super().__init__()
         self.graph = graph
         self.node_items: dict[int, NodeItem] = {}
         self.wire_items: dict[Connection, WireItem] = {}
+        self._undo: list[tuple] = []  # graph states, oldest first
+        self._redo: list[tuple] = []  # graph states, the next to redo last
+        self._committed = graph.state()  # the state at the last commit
         for node in graph.nodes.values():
             self._add_item(node)
         self.sync_wires()
@@ -532,19 +615,43 @@ class EditorScene(QGraphicsScene):
 
     def contextMenuEvent(self, event) -> None:
         pos = event.scenePos()
-        if self.itemAt(pos, QTransform()):
-            super().contextMenuEvent(event)  # e.g. a text box's own copy/paste menu
+        item = self.itemAt(pos, QTransform())
+        if isinstance(item, QGraphicsProxyWidget):
+            super().contextMenuEvent(event)  # a text box's own copy/paste menu
             return
         menu = QMenu()
-        add_menu_heading(menu, strings.ADD_NODE_HEADING)
-        for i, group in enumerate(MENU_GROUPS):
-            if i:
-                menu.addSeparator()
-            for key in group:
-                menu.addAction(NODE_TYPES[key].title).setData(key)
-        chosen = menu.exec(event.screenPos())
-        if chosen:
-            self.add_node(chosen.data(), pos)
+        if item is None:
+            self._menu_action(menu, strings.MENU_PASTE, "paste", lambda: self.paste(pos), self.can_paste())
+            menu.addSeparator()
+            add_menu_heading(menu, strings.ADD_NODE_HEADING)
+            for i, group in enumerate(MENU_GROUPS):
+                if i:
+                    menu.addSeparator()
+                for key in group:
+                    menu.addAction(NODE_TYPES[key].title).setData(key)
+            chosen = menu.exec(event.screenPos())
+            if chosen and chosen.data():
+                self.add_node(chosen.data(), pos)
+            return
+        clicked = item.topLevelItem()  # a port belongs to its node
+        if not clicked.isSelected():
+            self.clearSelection()
+            clicked.setSelected(True)
+        nodes = self.has_selected_nodes()
+        self._menu_action(menu, strings.MENU_CUT, "cut", self.cut, nodes)
+        self._menu_action(menu, strings.MENU_COPY, "copy", self.copy, nodes)
+        self._menu_action(menu, strings.MENU_DUPLICATE, "duplicate", self.duplicate, nodes)
+        self._menu_action(menu, strings.MENU_DELETE, "delete", self.delete_selected, True)
+        menu.exec(event.screenPos())
+
+    @staticmethod
+    def _menu_action(menu: QMenu, text: str, command: str, slot, enabled: bool) -> None:
+        action = QAction(text, menu)
+        action.setShortcut(QKeySequence(EDIT_SHORTCUTS[command][0]))  # for show: the Edit menu's actions do the work
+        action.setShortcutContext(Qt.WidgetShortcut)
+        action.setEnabled(enabled)
+        action.triggered.connect(slot)
+        menu.addAction(action)
 
     def fields_in_order(self) -> list[QGraphicsProxyWidget]:
         """Every node's fields in reading order: nodes top to bottom then left to right, fields top to bottom."""
@@ -571,17 +678,25 @@ class EditorScene(QGraphicsScene):
     def focusNextPrevChild(self, next: bool) -> bool:
         return self.focus_next_field(next)
 
+    def typing(self) -> bool:
+        return isinstance(self.focusItem(), QGraphicsProxyWidget)
+
     def keyPressEvent(self, event) -> None:
-        typing = isinstance(self.focusItem(), QGraphicsProxyWidget)
-        if event.key() == Qt.Key_Delete and not typing:
-            self.delete_selected()
+        if event.key() == Qt.Key_Escape and not self.typing():
+            self.clearSelection()
         else:
             super().keyPressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if not self.typing():
+            self.commit()  # the end of dragging nodes
 
     def add_node(self, type_key: str, pos: QPointF) -> None:
         self._add_item(self.graph.add_node(type_key, pos.x(), pos.y()))
         self.nodes_changed.emit()
         self.edited.emit()
+        self.commit()
 
     def _add_item(self, node: Node) -> None:
         item = NodeItem(node)
@@ -591,6 +706,8 @@ class EditorScene(QGraphicsScene):
     def set_value(self, node_id: int, name: str, value: str) -> None:
         self.graph.set_value(node_id, name, value)
         self.edited.emit()
+        if name != "name":  # typing a name is committed when the box is left
+            self.commit()
 
     def node_moved(self, item: NodeItem) -> None:
         node_id = item.node.id
@@ -608,6 +725,7 @@ class EditorScene(QGraphicsScene):
         self.graph.connect(out.node_item.node.id, out.index, inp.node_item.node.id, inp.index)
         self.sync_wires()
         self.edited.emit()
+        self.commit()
 
     def delete_selected(self) -> None:
         for item in self.selectedItems():
@@ -620,6 +738,138 @@ class EditorScene(QGraphicsScene):
         self.sync_wires()
         self.nodes_changed.emit()
         self.edited.emit()
+        self.commit()
+
+    def select_all(self) -> None:
+        for item in [*self.node_items.values(), *self.wire_items.values()]:
+            item.setSelected(True)
+
+    def has_selected_nodes(self) -> bool:
+        return any(isinstance(item, NodeItem) for item in self.selectedItems())
+
+    def _selected_ids(self) -> list[int]:
+        return [item.node.id for item in self.selectedItems() if isinstance(item, NodeItem)]
+
+    # --- Clipboard ---
+
+    def copy(self) -> None:
+        """Put the selected nodes, and the wires between them, on the clipboard."""
+        ids = self._selected_ids()
+        if not ids:
+            return
+        data = self.graph.fragment(ids)
+        data["copy"] = uuid.uuid4().hex
+        mime = QMimeData()
+        mime.setData(CLIPBOARD_FORMAT, QByteArray(json.dumps(data, ensure_ascii=False).encode("utf-8")))
+        QApplication.clipboard().setMimeData(mime)
+
+    def cut(self) -> None:
+        if self.has_selected_nodes():
+            self.copy()
+            self.delete_selected()
+
+    def can_paste(self) -> bool:
+        return clipboard_fragment() is not None
+
+    def paste(self, pos: QPointF | None = None) -> None:
+        """Paste the copied nodes with their top-left corner at `pos`. With no `pos`, one grid cell further on from
+        where they were copied than the last paste of them."""
+        found = clipboard_fragment()
+        if not found:
+            return
+        piece, copy_id = found
+        if pos is None:
+            last_id, count = EditorScene._pasted
+            count = count + 1 if last_id == copy_id else 1
+            EditorScene._pasted = (copy_id, count)
+            x, y = self._corner(piece)
+            pos = QPointF(x + count * GRID, y + count * GRID)
+        self._add_piece(piece, pos)
+
+    def duplicate(self) -> None:
+        """Copy the selected nodes, and the wires between them, one grid cell down and right of them."""
+        ids = self._selected_ids()
+        if ids:
+            piece = load_fragment(self.graph.fragment(ids))
+            x, y = self._corner(piece)
+            self._add_piece(piece, QPointF(x + GRID, y + GRID))
+
+    @staticmethod
+    def _corner(piece: Graph) -> tuple[int, int]:
+        """The top-left corner of a piece's nodes."""
+        return min(n.x for n in piece.nodes.values()), min(n.y for n in piece.nodes.values())
+
+    def _add_piece(self, piece: Graph, pos: QPointF) -> None:
+        """Add copies of `piece`'s nodes and wires with their top-left corner at `pos`, and select them."""
+        ids = set(self.graph.paste(piece, pos.x(), pos.y()))
+        for node_id in ids:
+            self._add_item(self.graph.nodes[node_id])
+        self.sync_wires()
+        self.clearSelection()
+        for node_id in ids:
+            self.node_items[node_id].setSelected(True)
+        for connection, wire in self.wire_items.items():
+            if connection.src in ids and connection.dst in ids:
+                wire.setSelected(True)
+        self.nodes_changed.emit()
+        self.edited.emit()
+        self.commit()
+
+    # --- Undo ---
+
+    def commit(self) -> None:
+        """End the current undo step: everything changed since the last commit becomes one step."""
+        state = self.graph.state()
+        if state != self._committed:
+            self._undo.append(self._committed)
+            self._redo.clear()
+            self._committed = state
+            self.history_changed.emit()
+
+    def can_undo(self) -> bool:
+        return bool(self._undo) or self.graph.state() != self._committed
+
+    def can_redo(self) -> bool:
+        return bool(self._redo) and self.graph.state() == self._committed
+
+    def undo(self) -> None:
+        self.commit()
+        if self._undo:
+            self._redo.append(self._committed)
+            self._go_to(self._undo.pop())
+
+    def redo(self) -> None:
+        self.commit()
+        if self._redo:
+            self._undo.append(self._committed)
+            self._go_to(self._redo.pop())
+
+    def _go_to(self, state: tuple) -> None:
+        """Put the graph in an earlier or later state, then select and show what that changed."""
+        before = self._committed
+        self._committed = state
+        self.graph.set_state(state)
+        for item in [*self.node_items.values(), *self.wire_items.values()]:
+            self.removeItem(item)
+        self.node_items.clear()
+        self.wire_items.clear()
+        for node in self.graph.nodes.values():
+            self._add_item(node)
+        self.sync_wires()
+
+        old_nodes, old_wires = set(before[0]), set(before[1])
+        changed = [self.node_items[n[0]] for n in state[0] if n not in old_nodes]
+        changed += [self.wire_items[Connection(*c)] for c in state[1] if c not in old_wires]
+        for item in changed:
+            item.setSelected(True)
+        self.nodes_changed.emit()
+        self.edited.emit()
+        self.history_changed.emit()
+        if changed:
+            area = changed[0].sceneBoundingRect()
+            for item in changed[1:]:
+                area = area.united(item.sceneBoundingRect())
+            self.reveal.emit(area)
 
     def sync_wires(self) -> None:
         """Make the wire items match the model's connections."""
@@ -730,7 +980,18 @@ class EditorView(QGraphicsView):
         self._recentering = False  # True while the view moves for internal reasons (not a user pan)
         for bar in (self.horizontalScrollBar(), self.verticalScrollBar()):
             bar.valueChanged.connect(self._scrolled)
-        scene.nodes_changed.connect(self.update_bounds)
+        self._watch_scene(scene)
+
+        # Selection box, while one is being dragged: its corners in scene coordinates, how it changes the
+        # selection, and the selection from before it.
+        self._band_start: QPointF | None = None
+        self._band_end = QPointF()
+        self._band_mouse = QPointF()  # the mouse, in viewport coordinates
+        self._band_mode = "replace"  # or "add" (Shift) or "toggle" (Ctrl)
+        self._band_before: set[QGraphicsItem] = set()
+        self._band_timer = QTimer(self)  # scrolls while the mouse is near or past the window edge
+        self._band_timer.setInterval(BAND_SCROLL_INTERVAL)
+        self._band_timer.timeout.connect(self._band_scroll)
 
         self._mode = EDIT
         self._space_held = False  # holding Space switches to Drag mode until released
@@ -748,13 +1009,24 @@ class EditorView(QGraphicsView):
     def set_graph(self, graph: Graph, view: ViewState) -> None:
         """Show `graph` in a fresh scene, at the given zoom and center."""
         self._leave_text_box()
+        self._end_band()
         scene = EditorScene(graph)
-        scene.nodes_changed.connect(self.update_bounds)
+        self._watch_scene(scene)
         self.setScene(scene)
         self._scene = scene
         self._center = QPointF(view.center_x, view.center_y)
         self._apply_zoom(min(range(len(ZOOM_LEVELS)), key=lambda i: abs(ZOOM_LEVELS[i] - view.zoom)))
         self.scene_replaced.emit()
+
+    def _watch_scene(self, scene: EditorScene) -> None:
+        scene.nodes_changed.connect(self.update_bounds)
+        scene.reveal.connect(self._reveal)
+
+    def _reveal(self, area: QRectF) -> None:
+        """Center on `area` if none of it is on screen, without zooming."""
+        visible = self.mapToScene(self.viewport().rect()).boundingRect()
+        if not visible.intersects(area):
+            self._recenter(area.center())
 
     def view_state(self) -> ViewState:
         return ViewState(ZOOM_LEVELS[self._zoom_index], self._center.x(), self._center.y())
@@ -819,6 +1091,20 @@ class EditorView(QGraphicsView):
     def _leave_text_box(self) -> None:
         if self._typing():
             self.scene().focusItem().clearFocus()
+
+    def text_field(self) -> QLineEdit | None:
+        """The Name box being typed in, if any."""
+        item = self.scene().focusItem()
+        if isinstance(item, QGraphicsProxyWidget) and isinstance(item.widget(), QLineEdit):
+            return item.widget()
+        return None
+
+    def mouse_scene_pos(self) -> QPointF | None:
+        """Where the mouse is on the canvas, or None if it isn't over the canvas (but e.g. over a menu)."""
+        mouse = QCursor.pos()
+        if QApplication.widgetAt(mouse) is not self.viewport():
+            return None
+        return self.mapToScene(self.viewport().mapFromGlobal(mouse))
 
     def _update_cursor(self) -> None:
         if self._pan_from is not None:
@@ -935,7 +1221,8 @@ class EditorView(QGraphicsView):
         )
         self.build_button.move(CONTROLS_MARGIN, self.height() - self.build_button.height() - CONTROLS_MARGIN)
 
-    # --- Mouse: middle-drag always pans; in Drag mode left-drag pans and nothing in the scene can be clicked ---
+    # --- Mouse: middle-drag always pans; in Drag mode left-drag pans and nothing in the scene can be clicked. In
+    # Edit mode, left-dragging from empty canvas draws a selection box. ---
 
     def mousePressEvent(self, event) -> None:
         dragging = self._effective_mode() == DRAG
@@ -943,17 +1230,108 @@ class EditorView(QGraphicsView):
             self._pan_from = event.position()
             self._pan_button = event.button()
             self._update_cursor()
+        elif self._on_empty_canvas(event):
+            self._start_band(event)
         elif not dragging:
             super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
-        if self._effective_mode() == DRAG:
-            self.mousePressEvent(event)  # a quick second click should start another pan, not edit anything
+        if self._effective_mode() == DRAG or self._on_empty_canvas(event):
+            self.mousePressEvent(event)  # a quick second click should start another pan or box, not edit anything
         else:
             super().mouseDoubleClickEvent(event)
 
+    def _on_empty_canvas(self, event) -> bool:
+        """True for a left click in Edit mode that isn't on a node or wire."""
+        return (
+            event.button() == Qt.LeftButton
+            and self._effective_mode() == EDIT
+            and self.itemAt(event.position().toPoint()) is None
+        )
+
+    def _start_band(self, event) -> None:
+        self._leave_text_box()
+        modifiers = event.modifiers()
+        if modifiers & Qt.ShiftModifier:
+            self._band_mode = "add"
+        elif modifiers & Qt.ControlModifier:
+            self._band_mode = "toggle"
+        else:
+            self._band_mode = "replace"
+        self._band_before = set(self.scene().selectedItems())
+        self._band_mouse = event.position()
+        self._band_start = self.mapToScene(event.position().toPoint())
+        self._update_band()
+        self._band_timer.start()
+
+    def _update_band(self) -> None:
+        """Select what the box touches, combined with the selection from before it as the box's mode says."""
+        self._band_end = self.mapToScene(self._band_mouse.toPoint())
+        box = QRectF(self._band_start, self._band_end).normalized()
+        scene = self.scene()
+        hits = set()
+        if box.width() or box.height():
+            hits = {item.topLevelItem() for item in scene.items(box, Qt.IntersectsItemShape)}
+        if self._band_mode == "add":
+            chosen = self._band_before | hits
+        elif self._band_mode == "toggle":
+            chosen = self._band_before ^ hits
+        else:
+            chosen = hits
+        for item in [*scene.node_items.values(), *scene.wire_items.values()]:
+            item.setSelected(item in chosen)
+        self.viewport().update()
+
+    def _band_scroll(self) -> None:
+        """While the mouse is near or past an edge of the window, scroll that way, faster the further out it is."""
+        rect = self.viewport().rect()
+        x, y = self._band_mouse.x(), self._band_mouse.y()
+
+        def step(position: float, size: int) -> int:
+            if position < BAND_SCROLL_MARGIN:
+                distance = position - BAND_SCROLL_MARGIN
+            elif position > size - BAND_SCROLL_MARGIN:
+                distance = position - (size - BAND_SCROLL_MARGIN)
+            else:
+                return 0
+            return max(-BAND_SCROLL_MAX, min(BAND_SCROLL_MAX, round(distance / 2)))
+
+        moved = False
+        for bar, delta in ((self.horizontalScrollBar(), step(x, rect.width())),
+                           (self.verticalScrollBar(), step(y, rect.height()))):
+            if delta:
+                before = bar.value()
+                bar.setValue(before + delta)
+                moved |= bar.value() != before
+        if moved:
+            self._update_band()
+
+    def _end_band(self) -> None:
+        if self._band_start is not None:
+            self._band_start = None
+            self._band_before = set()
+            self._band_timer.stop()
+            self.viewport().update()
+
+    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
+        if self._band_start is None:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, False)  # a crisp 1px line
+        pen = QPen(SELECTED, 1)
+        pen.setCosmetic(True)  # 1 screen px at any zoom
+        fill = QColor(SELECTED)
+        fill.setAlpha(BAND_FILL_ALPHA)
+        painter.setPen(pen)
+        painter.setBrush(fill)
+        painter.drawRect(QRectF(self._band_start, self._band_end).normalized())
+        painter.restore()
+
     def mouseMoveEvent(self, event) -> None:
-        if self._pan_from is not None:
+        if self._band_start is not None:
+            self._band_mouse = event.position()
+            self._update_band()
+        elif self._pan_from is not None:
             delta = event.position() - self._pan_from
             self._pan_from = event.position()
             h, v = self.horizontalScrollBar(), self.verticalScrollBar()
@@ -963,7 +1341,10 @@ class EditorView(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if self._pan_from is not None and event.button() == self._pan_button:
+        if self._band_start is not None:
+            if event.button() == Qt.LeftButton:
+                self._end_band()
+        elif self._pan_from is not None and event.button() == self._pan_button:
             self._pan_from = None
             self._update_cursor()
         elif self._effective_mode() == EDIT:

@@ -1,6 +1,6 @@
 import pytest
 
-from graph import GRID, Graph
+from graph import GRID, Connection, Graph, load_fragment
 
 
 def make(*type_keys):
@@ -117,3 +117,90 @@ def test_auto_resolves_to_its_current_choice():
     assert split.choice("algorithm") == "paulus_torcoli"
     graph.set_value(split.id, "algorithm", "mid_side")
     assert split.choice("algorithm") == "mid_side"
+
+
+# --- Undo state ---
+
+
+def test_set_state_restores_nodes_values_and_connections():
+    graph, (file, out) = make("input", "output")
+    graph.set_value(file, "name", "Song")
+    graph.connect(file, 0, out, 0)
+    state = graph.state()
+    graph.remove_node(file)
+    graph.move_node(out, 240, 0)
+    graph.set_state(state)
+    assert graph.state() == state
+    assert graph.nodes[file].values == {"name": "Song"}
+    assert graph.add_node("output", 0, 0).id == 3  # ids already handed out aren't reused
+
+
+# --- Copy and paste ---
+
+
+def pasted(graph: Graph, source: Graph, ids, x=0, y=0) -> list:
+    piece = load_fragment(source.fragment(ids))
+    return [graph.nodes[i] for i in graph.paste(piece, x, y)]
+
+
+def test_fragment_keeps_only_wires_between_copied_nodes():
+    graph, (file, split, out) = make("input", "split_mid_side", "output")
+    graph.connect(file, 0, split, 0)
+    graph.connect(split, 0, out, 0)
+    piece = load_fragment(graph.fragment([split, out]))
+    assert len(piece.nodes) == 2
+    assert piece.connections == {Connection(split, 0, out, 0)}
+
+
+def test_paste_places_top_left_corner_and_keeps_layout_and_wires():
+    source = Graph()
+    a = source.add_node("input", 48, 96)
+    b = source.add_node("output", 288, 144)
+    source.connect(a.id, 0, b.id, 0)
+    graph = Graph()
+    new_a, new_b = pasted(graph, source, [a.id, b.id], 480, 0)
+    assert (new_a.x, new_a.y, new_b.x, new_b.y) == (480, 0, 720, 48)
+    assert graph.connections == {Connection(new_a.id, 0, new_b.id, 0)}
+
+
+def test_paste_numbers_typed_names_only_when_taken():
+    graph = Graph()
+    for name in ("Vocals", "Vocals 2"):
+        graph.set_value(graph.add_node("output", 0, 0).id, "name", name)
+    source = Graph()
+    for name in ("vocals", "Drums", "Vocals 2", ""):
+        node = source.add_node("output", 0, 0)
+        if name:
+            source.set_value(node.id, "name", name)
+    named = source.add_node("input", 0, 0)
+    source.set_value(named.id, "name", "Vocals")  # another type of node: no clash
+    names = [n.values.get("name", "") for n in pasted(graph, source, source.nodes)]
+    assert names == ["vocals 3", "Drums", "Vocals 4", "", "Vocals"]
+
+
+def test_paste_keeps_values():
+    source, (file, split) = make("input", "split_mid_side")
+    source.set_value(file, "file", "C:/a.wav")
+    source.set_value(split, "algorithm", "mid_side")
+    new_file, new_split = pasted(Graph(), source, [file, split])
+    assert new_file.values == {"file": "C:/a.wav"}
+    assert new_split.values == {"algorithm": "mid_side"}
+
+
+@pytest.mark.parametrize("data", [
+    None,
+    [],
+    {"format": "other", "nodes": [], "connections": []},
+    {"format": "stemgraph-nodes", "nodes": [], "connections": []},  # nothing to paste
+    {"format": "stemgraph-nodes", "nodes": [{"id": 1, "type": "nope", "x": 0, "y": 0, "values": {}}],
+     "connections": []},
+    {"format": "stemgraph-nodes", "nodes": [{"id": 1, "type": "output", "x": "0", "y": 0, "values": {}}],
+     "connections": []},
+    {"format": "stemgraph-nodes", "nodes": [{"id": 1, "type": "output", "x": 0, "y": 0, "values": {"file": "a"}}],
+     "connections": []},
+    {"format": "stemgraph-nodes", "nodes": [{"id": 1, "type": "output", "x": 0, "y": 0, "values": {}}],
+     "connections": [[1, 0, 1, 0]]},
+    {"format": "stemgraph-nodes", "nodes": [{"id": 1, "type": "output", "x": 0, "y": 0}], "connections": []},
+])
+def test_load_fragment_rejects_invalid_data(data):
+    assert load_fragment(data) is None
