@@ -388,29 +388,26 @@ def test_unconnected_invert_is_a_problem(tmp_path):
     assert "Invert" in " ".join(problems(g))
 
 
-def add_mix(g: Graph, *sources, subtracted=()) -> int:
-    """A Mix of the given (node, output) sources; `subtracted` lists the inputs that subtract."""
+def add_mix(g: Graph, *sources) -> int:
+    """A Mix of the given (node, output) sources."""
     node = g.add_node("mix", 250, 0)
     for index, (source, output) in enumerate(sources):
         g.connect(source, output, node.id, index)
-    for index in subtracted:
-        g.set_subtracts(node.id, index, True)
     return node.id
 
 
-def test_mixed_outputs_are_named_after_their_sources_and_signs(tmp_path):
+def test_mixed_outputs_are_named_after_their_sources(tmp_path):
     g = Graph()
     song, vocals, drums, bass, keys, pads = (add_input(g, name) for name in
                                              ("Song", "Vocals", "Drums", "Bass", "Keys", "Pads"))
     split = add_split(g, song)
-    add_output(g, "", add_mix(g, (song, 0), (vocals, 0), subtracted=[1]), y=0)
     add_output(g, "", add_mix(g, (drums, 0), (bass, 0), (vocals, 0)), y=100)
-    add_output(g, "", add_mix(g, (vocals, 0), (song, 0), subtracted=[0]), y=200)
+    add_output(g, "", add_mix(g, (vocals, 0)), y=200)
     add_output(g, "", add_mix(g, (split, 0), (split, 1)), y=300)
     add_output(g, "", add_mix(g, *((n, 0) for n in (drums, bass, vocals, keys, pads, song))), y=400)
     add_output(g, "", add_mix(g), y=500)
     assert list(build.output_names(g).values()) == [
-        "Song − Vocals", "Drums + Bass + Vocals", "−Vocals + Song", "Song center + Song side",
+        "Drums + Bass + Vocals", "Vocals", "Song center + Song side",
         "Drums + Bass + 4 more", "Mix"]
 
 
@@ -473,13 +470,13 @@ def test_build_writes_the_mix_padding_shorter_tracks(tmp_path):
     g = Graph()
     names = ("Song", "Vocals", "Drums")
     song, vocals, drums = (add_input(g, name, path) for name, path in zip(names, paths, strict=True))
-    add_output(g, "Out", add_mix(g, (song, 0), (vocals, 0), (drums, 0), subtracted=[1]))
+    add_output(g, "Out", add_mix(g, (song, 0), (vocals, 0), (drums, 0)))
     plan = make_plan(g)
-    assert "Mixing Song − Vocals + Drums" in [s.label for s in plan.steps]
+    assert "Mixing Song + Vocals + Drums" in [s.label for s in plan.steps]
     assert run(plan, out)[0]
     song_data, vocals_data, drums_data = (read(path).astype(np.float64) for path in paths)
     expected = song_data.copy()
-    expected[:len(vocals_data)] -= vocals_data
+    expected[:len(vocals_data)] += vocals_data
     expected[:len(drums_data)] += drums_data
     assert np.array_equal(read(out / "Out.wav"), expected.astype(np.float32))
 
@@ -489,7 +486,7 @@ def test_subtracting_a_source_from_itself_is_silent(tmp_path):
     out.mkdir()
     g = Graph()
     song = add_input(g, "Song", tone(tmp_path / "song.wav"))
-    add_output(g, "Out", add_mix(g, (song, 0), (song, 0), subtracted=[1]))
+    add_output(g, "Out", add_subtract(g, song, song, align="off"))
     assert run(make_plan(g), out)[0]
     data = read(out / "Out.wav")
     assert len(data) == 4410 and not data.any()

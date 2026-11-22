@@ -202,14 +202,13 @@ def test_rejects_unknown_alignment():
         loads(project_text(nodes=[node]), ".")
 
 
-def test_mix_with_signs_round_trips():
+def test_mix_round_trips():
     graph = Graph()
     sources = [graph.add_node("input", 0, 96 * i) for i in range(3)]
     mix = graph.add_node("mix", 240, 0)
     # Wired bottom source first, so the file (sorted by source) doesn't list them in input order.
     for index, source in enumerate(reversed(sources)):
         graph.connect(source.id, 0, mix.id, index)
-    graph.set_subtracts(mix.id, 1, True)
     loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
     assert snapshot(loaded) == snapshot(graph)
 

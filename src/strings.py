@@ -50,8 +50,6 @@ POLARITY_KEEP_TIP = "Keeps the polarity as is"
 ALIGN_FIRST = "Align first"  # a Subtract's checkbox
 ALIGN_FIRST_TIP = "Align the audio before subtracting"
 ADD_INPUT = "Add input"  # the empty input below a Mix's connected ones
-ADD_TIP = "Add this input"
-SUBTRACT_TIP = "Subtract this input"
 CHOOSE_FILE = "Choose file…"
 EMPTY_HINT = "Drop audio files here, or right-click and choose Add Inputs…"  # on an empty canvas
 
@@ -217,12 +215,10 @@ STEP_WRITE = "Writing {file}"
 SOURCE_OUTPUT = "{source} {port}"  # a split's output, as a source: "Song center"
 SOURCE_INVERTED = "{source} inverted"  # an Invert's output, as a source: "Song inverted"
 SOURCE_ALIGNED = "{source} aligned"  # an Align's output, as a source: "Vocals aligned"
-# A Mix's output, as a source, built up from its sources: "Drums + Bass", "Song − Instrumental", "−Vocals",
-# and past MIX_NAMED_SOURCES of them, "Drums + Bass + 4 more".
-MIX_FIRST_ADDED = "{source}"
-MIX_FIRST_SUBTRACTED = "−{source}"
+SOURCE_SUBTRACTED = "{source} − {minus}"  # a Subtract's output, as a source: "Song − Instrumental"
+# A Mix's output, as a source, built up from its sources: "Drums + Bass", and past MIX_NAMED_SOURCES of them,
+# "Drums + Bass + 4 more".
 MIX_ADDED = "{mix} + {source}"
-MIX_SUBTRACTED = "{mix} − {source}"
 MIX_MORE = "{mix} + {count} more"
 
 LOG_MONO = "{file} is mono; using it on both channels."

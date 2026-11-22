@@ -123,21 +123,20 @@ def _derived_name(node: Node, output: int, sources: list[str]) -> str:
         return strings.SOURCE_ALIGNED.format(source=sources[0])
     if node.type_key == "mix":
         return _mix_name(node, sources)
-    if node.type_key == "subtract":  # worded like a Mix that subtracts its second input
-        return strings.MIX_SUBTRACTED.format(mix=sources[0], source=sources[1])
+    if node.type_key == "subtract":
+        return strings.SOURCE_SUBTRACTED.format(source=sources[0], minus=sources[1])
     return strings.SOURCE_OUTPUT.format(source=sources[0], port=node.type.outputs[output])
 
 
 def _mix_name(node: Node, sources: list[str]) -> str:
-    """A Mix named after its sources and their signs: "Drums + Bass", "Song − Instrumental", "−Vocals", or past
-    MIX_NAMED_SOURCES of them, "Drums + Bass + 4 more". "Mix" if nothing is connected."""
+    """A Mix named after its sources: "Drums + Bass", or past MIX_NAMED_SOURCES of them, "Drums + Bass + 4 more".
+    "Mix" if nothing is connected."""
     if not sources:
         return node.type.title
     named = sources if len(sources) <= MIX_NAMED_SOURCES else sources[:MIX_NAMED_SOURCES - 1]
-    first = strings.MIX_FIRST_SUBTRACTED if node.subtracts(0) else strings.MIX_FIRST_ADDED
-    name = first.format(source=named[0])
-    for index, source in enumerate(named[1:], start=1):
-        name = (strings.MIX_SUBTRACTED if node.subtracts(index) else strings.MIX_ADDED).format(mix=name, source=source)
+    name = named[0]
+    for source in named[1:]:
+        name = strings.MIX_ADDED.format(mix=name, source=source)
     if len(named) < len(sources):
         name = strings.MIX_MORE.format(mix=name, count=len(sources) - len(named))
     return name
@@ -353,9 +352,8 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
                 sources = graph.sources(node_id)
                 tracks = tuple(require(c.src, c.src_output) for c in sources)
                 done.add(key)
-                subtracted = [node.subtracts(c.dst_input) for c in sources]
                 name = describe(node_id, 0)
-                steps.append(Step(strings.STEP_MIX.format(sources=name), _mix(tracks, subtracted, key, name),
+                steps.append(Step(strings.STEP_MIX.format(sources=name), _mix(tracks, key, name),
                                   uses=tracks))
             return key
         raise ValueError(f"can't compute a {node.type.title} node")
@@ -425,10 +423,10 @@ def _invert(source: tuple, key: tuple, name: str, channels: tuple[int, ...]):
     return action
 
 
-def _mix(tracks: tuple, subtracted: list[bool], key: tuple, name: str):
+def _mix(tracks: tuple, key: tuple, name: str):
     def action(ctx: Context) -> list:
         try:
-            ctx.store[key] = audio.mix([ctx.store[track] for track in tracks], subtracted)
+            ctx.store[key] = audio.mix([ctx.store[track] for track in tracks], [False] * len(tracks))
         except MemoryError:
             raise BuildError(strings.NO_MEMORY_MIX.format(sources=name)) from None
         return []

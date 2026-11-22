@@ -16,14 +16,8 @@ class NodeType:
     # Editable values shown in the node: "name" (text), "file" (path), a key of CHOICES (a dropdown) or a key of
     # TOGGLES (a checkbox).
     fields: tuple[str, ...] = ()
-    # Growing inputs, all named inputs[0]: one per connection, then an empty one below them for adding more. Each
-    # connected input adds or subtracts; see SIGNS.
+    # Growing inputs, all named inputs[0]: one per connection, then an empty one below them for adding more.
     growing: bool = False
-
-    @property
-    def value_names(self) -> tuple[str, ...]:
-        """The values a node of this type may hold: its fields, and SIGNS if its inputs grow."""
-        return (*self.fields, SIGNS) if self.growing else self.fields
 
 
 # Dropdown fields: the values each may hold, in menu order, with their labels and hover text. The first is the
@@ -66,11 +60,6 @@ AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI, "alignment": GCC_PHAT}
 # stored as "", so that a node left on it saves the same as one never touched; unchecked is OFF.
 OFF = "off"
 TOGGLES = {"align": ("alignment",)}
-
-# A growing node's signs value: one character per connected input, top to bottom, "-" for subtracted and "+" for
-# added. Inputs past the end are added, and trailing "+" are dropped, so a node with every input added saves the
-# same as one never touched.
-SIGNS = "signs"
 
 NODE_TYPES = {
     "input": NodeType(strings.NODE_INPUT, (), (strings.PORT_AUDIO,), fields=("name", "file")),
@@ -124,11 +113,6 @@ class Node:
                   for f in TOGGLES[toggle]}
         return tuple(f for f in self.type.fields if f not in hidden)
 
-    def subtracts(self, index: int) -> bool:
-        """True if a growing node's input `index` is subtracted rather than added."""
-        signs = self.values.get(SIGNS, "")
-        return index < len(signs) and signs[index] == "-"
-
 
 @dataclass(frozen=True)
 class Connection:
@@ -163,23 +147,13 @@ class Graph:
 
     def set_value(self, node_id: int, name: str, value: str) -> None:
         node = self.nodes[node_id]
-        if name not in node.type.value_names:
+        if name not in node.type.fields:
             raise ValueError(f"{node.type.title} has no field {name!r}")
         if name in CHOICES and value not in (choice[0] for choice in CHOICES[name]):
             raise ValueError(f"{value!r} is not a choice for {name!r}")
         if name in TOGGLES and value not in ("", OFF):
             raise ValueError(f"{value!r} is not a checkbox value")
-        if name == SIGNS:
-            if value.strip("+-"):
-                raise ValueError(f"{value!r} isn't made of signs")
-            value = value.rstrip("+")
         node.values[name] = value
-
-    def set_subtracts(self, node_id: int, index: int, subtracts: bool) -> None:
-        """Make a growing node's input `index` subtract (or add)."""
-        signs = list(self.nodes[node_id].values.get(SIGNS, "").ljust(index + 1, "+"))
-        signs[index] = "-" if subtracts else "+"
-        self.set_value(node_id, SIGNS, "".join(signs))
 
     def input_count(self, node_id: int) -> int:
         """How many inputs a node has: its type's, or for growing inputs, one per connection and an empty one for
@@ -194,15 +168,13 @@ class Graph:
         return sorted((c for c in self.connections if c.dst == node_id), key=lambda c: c.dst_input)
 
     def _close_gaps(self, node_id: int) -> None:
-        """Renumber a growing node's connections to inputs 0, 1, 2, … in order, moving their signs with them."""
+        """Renumber a growing node's connections to inputs 0, 1, 2, … in order."""
         node = self.nodes.get(node_id)
         if node is None or not node.type.growing:
             return
         sources = self.sources(node_id)
-        signs = "".join("-" if node.subtracts(c.dst_input) else "+" for c in sources)
         self.connections -= set(sources)
         self.connections |= {Connection(c.src, c.src_output, node_id, i) for i, c in enumerate(sources)}
-        self.set_value(node_id, SIGNS, signs)
 
     def remove_node(self, node_id: int) -> None:
         del self.nodes[node_id]

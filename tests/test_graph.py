@@ -176,40 +176,30 @@ def test_mix_inputs_grow_with_one_empty_input():
     assert graph.input_count(mix) == 3
 
 
-def test_mix_closes_gaps_and_keeps_signs_with_their_wires():
+def test_mix_closes_gaps():
     graph, (a, b, c, mix) = make("input", "input", "input", "mix")
     for index, source in enumerate((a, b, c)):
         graph.connect(source, 0, mix, index)
-    graph.set_subtracts(mix, 2, True)
-    assert graph.nodes[mix].values["signs"] == "++-"
     graph.disconnect(Connection(a, 0, mix, 0))
     assert graph.sources(mix) == [Connection(b, 0, mix, 0), Connection(c, 0, mix, 1)]
-    assert graph.nodes[mix].values["signs"] == "+-"
     graph.remove_node(c)
     assert graph.sources(mix) == [Connection(b, 0, mix, 0)] and graph.input_count(mix) == 2
-    assert graph.nodes[mix].values["signs"] == ""  # all added again: saves like an untouched Mix
+    assert graph.nodes[mix].values == {}
 
 
-def test_signs_are_checked_and_trimmed():
+def test_mix_has_no_signs():
     graph, (mix,) = make("mix")
-    graph.set_value(mix, "signs", "-++")
-    assert graph.nodes[mix].values["signs"] == "-"
     with pytest.raises(ValueError):
-        graph.set_value(mix, "signs", "+x")
-    split = graph.add_node("split_mid_side", 0, 0)
-    with pytest.raises(ValueError):
-        graph.set_value(split.id, "signs", "-")
+        graph.set_value(mix, "signs", "-")
 
 
 def test_copying_a_mix_without_some_sources_closes_its_gaps():
     graph, (a, b, c, mix) = make("input", "input", "input", "mix")
     for index, source in enumerate((a, b, c)):
         graph.connect(source, 0, mix, index)
-    graph.set_subtracts(mix, 2, True)
     copy = Graph()
     new_c, new_mix = pasted(copy, graph, [c, mix])
     assert copy.sources(new_mix.id) == [Connection(new_c.id, 0, new_mix.id, 0)]
-    assert new_mix.subtracts(0)
 
 
 def test_set_state_restores_nodes_values_and_connections():
