@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionComboBox,
     QStylePainter,
+    QToolTip,
     QWidget,
 )
 
@@ -502,6 +503,23 @@ class ChoiceField(QComboBox):
         painter.end()
 
 
+class TextField(QLineEdit):
+    """A text node field that shows its whole text on hover when the box is too narrow for it, or while it's
+    empty, its greyed-out placeholder."""
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.ToolTip:
+            text = self.text() or self.placeholderText()
+            # The border, the style sheet's padding and QLineEdit's own text margin take ~5px each side.
+            if self.fontMetrics().horizontalAdvance(text) > self.width() - 10:
+                QToolTip.showText(event.globalPos(), text, self)
+            else:
+                QToolTip.hideText()
+                event.ignore()
+            return True
+        return super().event(event)
+
+
 class CheckField(QCheckBox):
     """A checkbox node field, drawn to match the text boxes: a box with a Radix check in it, then the label, which
     starts where other fields' captions do. Clicking anywhere on the row toggles it."""
@@ -701,7 +719,7 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         return 8 + QFontMetrics(QApplication.font()).horizontalAdvance(caption) + CAPTION_GAP
 
     def _name_field(self) -> QWidget:
-        field = QLineEdit(self.node.values.get("name", ""))
+        field = TextField(self.node.values.get("name", ""))
         field.textChanged.connect(lambda text: self.scene().set_value(self.node.id, "name", text))
         field.editingFinished.connect(lambda: self.scene() and self.scene().commit())  # typing is one undo step
         self.name_field = field

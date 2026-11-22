@@ -1,10 +1,10 @@
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QMimeData, QPoint, QPointF, QRect, QRectF, Qt, QUrl
-from PySide6.QtGui import QDropEvent, QPalette
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, QRectF, Qt, QUrl
+from PySide6.QtGui import QDropEvent, QHelpEvent, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QGraphicsProxyWidget
+from PySide6.QtWidgets import QApplication, QGraphicsProxyWidget, QToolTip
 
 from editor import (
     FIT_MARGIN,
@@ -281,6 +281,26 @@ def test_saved_algorithm_shows_in_its_dropdown(view):
     graph.set_value(split.id, "algorithm", "paulus_torcoli")
     view.set_graph(graph, ViewState())
     assert view.scene().node_items[split.id].fields[0].widget().currentText() == "Paulus–Torcoli"
+
+
+def test_name_box_shows_its_whole_text_on_hover_only_when_cut_off(view):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    view.set_graph(graph, ViewState())
+    name = view.scene().node_items[song.id].fields[0].widget()
+
+    def hover() -> str:
+        QToolTip.hideText()
+        QApplication.sendEvent(name, QHelpEvent(QEvent.ToolTip, QPoint(4, 4), name.mapToGlobal(QPoint(4, 4))))
+        return QToolTip.text()
+
+    name.setText("Vocals")
+    assert hover() == ""
+    name.setText("A very long stem name that cannot possibly fit in the box")
+    assert hover() == name.text()
+    name.setText("")
+    name.setPlaceholderText("Another very long name, greyed out because the box is empty")
+    assert hover() == name.placeholderText()
 
 
 def test_tab_moves_between_fields_in_reading_order(view):
