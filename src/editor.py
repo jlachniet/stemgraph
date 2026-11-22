@@ -64,7 +64,11 @@ from project import ViewState
 
 NODE_WIDTH = 8 * GRID
 PORT_RADIUS = 6
+OPEN_PORT_WIDTH = 2  # the ring of a growing node's empty input
 CAPTION_GAP = 8  # space between a caption and its text box
+SIGN_SIZE = GRID - 6  # each half of the + / − switch on a growing node's connected inputs, left of the label
+SIGN_LEFT = 12  # its left edge, just clear of the port
+SIGN_GAP = 6  # space between it and the input's label
 ZOOM_LEVELS = (0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0)
 WHEEL_NOTCH = 120  # angleDelta of one mouse-wheel notch
 ICON_DIR = Path(__file__).parent.parent / "assets" / "icons"  # Radix Icons, MIT (see docs/design.md)
@@ -105,7 +109,7 @@ BAND_SCROLL_INTERVAL = 16  # ms between selection-box scrolling ticks
 # group sorted alphabetically by node title (what the menu shows), not by type key, when adding a node type.
 MENU_GROUPS = [
     ["input", "output"],
-    ["invert", "split_mid_side", "subtract"],
+    ["invert", "mix", "split_mid_side"],
 ]
 
 # Radix Colors dark scales (see docs/design.md)
@@ -319,10 +323,19 @@ class PortItem(QGraphicsEllipseItem):
         self.is_output = is_output
         self.index = index
         self.setPos(NODE_WIDTH if is_output else 0, GRID * (node_item.first_port_row + index + 0.5))
-        self.setBrush(PORT)
-        self.setPen(QPen(NODE_BORDER, 1))
+        self.set_open(False)
         self.setCursor(Qt.CrossCursor)
         self._drag_wire: QGraphicsPathItem | None = None
+
+    def set_open(self, open: bool) -> None:
+        """Draw the port as a filled dot, or, for the empty input a growing node keeps for adding more, a ring."""
+        self.is_open = open
+        if open:
+            self.setBrush(NODE_BODY)
+            self.setPen(QPen(PORT, OPEN_PORT_WIDTH))
+        else:
+            self.setBrush(PORT)
+            self.setPen(QPen(NODE_BORDER, 1))
 
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
@@ -403,14 +416,86 @@ class ChoiceField(QComboBox):
         painter.end()
 
 
+class SignItem(QGraphicsItem):
+    """The + / − switch on a connected input of a growing node: two halves side by side, the input's sign lit and
+    the other greyed out. Clicking a half chooses it."""
+
+    def __init__(self, node_item: "NodeItem", index: int) -> None:
+        super().__init__(node_item)
+        self.node_item = node_item
+        self.index = index
+        self.rect = QRectF(0, 0, 2 * SIGN_SIZE, SIGN_SIZE)
+        self.setPos(SIGN_LEFT, GRID * (node_item.first_port_row + index) + (GRID - SIGN_SIZE) / 2)
+        self.setAcceptHoverEvents(True)
+        self._hovered: bool | None = None  # the half under the mouse: True for −, False for +, None for neither
+
+    def subtracts(self) -> bool:
+        return self.node_item.node.subtracts(self.index)
+
+    def boundingRect(self) -> QRectF:
+        return self.rect.adjusted(-1, -1, 1, 1)
+
+    @staticmethod
+    def _half(minus: bool) -> QRectF:
+        return QRectF(SIGN_SIZE if minus else 0, 0, SIGN_SIZE, SIGN_SIZE)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        outline = self.rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(QPen(QColor(FIELD_BORDER), 1))
+        painter.setBrush(QColor(FIELD_BACKGROUND))
+        painter.drawRoundedRect(outline, 3, 3)
+        # The chosen half is raised, like the canvas controls' current cursor mode.
+        painter.save()
+        painter.setClipRect(self._half(self.subtracts()))
+        painter.setPen(QPen(QColor(FIELD_BORDER_ACTIVE), 1))
+        painter.setBrush(QColor(ACTIVE_BACKGROUND))
+        painter.drawRoundedRect(outline, 3, 3)
+        painter.restore()
+        for minus in (False, True):
+            chosen = minus == self.subtracts()
+            color = TEXT if chosen else QColor(PLACEHOLDER_TEXT if self._hovered == minus else DISABLED_TEXT)
+            # Drawn rather than typed, so + and − are the same size and both sit exactly in the middle.
+            painter.setPen(QPen(color, 1.5))
+            middle, arm = self._half(minus).center(), SIGN_SIZE / 4
+            painter.drawLine(middle - QPointF(arm, 0), middle + QPointF(arm, 0))
+            if not minus:
+                painter.drawLine(middle - QPointF(0, arm), middle + QPointF(0, arm))
+
+    def _hover(self, pos: QPointF | None) -> None:
+        half = None if pos is None or not self.rect.contains(pos) else pos.x() >= SIGN_SIZE
+        if half != self._hovered:
+            self._hovered = half
+            chosen = half == self.subtracts()
+            self.setCursor(Qt.ArrowCursor if half is None or chosen else Qt.PointingHandCursor)
+            self.setToolTip("" if half is None else strings.SUBTRACT_TIP if half else strings.ADD_TIP)
+            self.update()
+
+    def hoverMoveEvent(self, event) -> None:
+        self._hover(event.pos())
+
+    def hoverLeaveEvent(self, event) -> None:
+        self._hover(None)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            event.ignore()  # a right-click opens the node's menu
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.rect.contains(event.pos()):
+            minus = event.pos().x() >= SIGN_SIZE
+            if minus != self.subtracts():
+                self.scene().set_subtracts(self.node_item.node.id, self.index, minus)
+                self._hovered = None  # the half under the mouse is chosen now: refresh its cursor
+                self._hover(event.pos())
+
+
 class NodeItem(ShiftSelects, QGraphicsItem):
-    def __init__(self, node: Node) -> None:
+    def __init__(self, node: Node, input_count: int, signs: int) -> None:
         super().__init__()
         self.node = node
         # Rows, one grid cell each: title, then one per field, then the ports.
         self.first_port_row = 1 + len(node.type.fields)
-        port_rows = max(len(node.type.inputs), len(node.type.outputs))
-        self.rect = QRectF(0, 0, NODE_WIDTH, GRID * (self.first_port_row + port_rows))
+        self.rect = QRectF()
         self.setFlags(
             QGraphicsItem.ItemIsMovable
             | QGraphicsItem.ItemIsSelectable
@@ -420,8 +505,34 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         self.fields: list[QGraphicsProxyWidget] = []  # top to bottom
         for row, name in enumerate(node.type.fields, start=1):
             self._add_field(row, name)
-        self.inputs = [PortItem(self, False, i) for i in range(len(node.type.inputs))]
+        self.inputs: list[PortItem] = []
+        self.signs: list[SignItem] = []  # one per connected input of a growing node
         self.outputs = [PortItem(self, True, i) for i in range(len(node.type.outputs))]
+        self.set_inputs(input_count, signs)
+
+    def set_inputs(self, count: int, signs: int) -> None:
+        """Show `count` inputs (they change for growing nodes), and signs on the first `signs` of them."""
+        while len(self.inputs) > count:
+            self._remove_child(self.inputs.pop())
+        self.inputs += [PortItem(self, False, i) for i in range(len(self.inputs), count)]
+        for i, port in enumerate(self.inputs):
+            port.set_open(self.node.type.growing and i == count - 1)
+        rect = QRectF(0, 0, NODE_WIDTH, GRID * (self.first_port_row + max(count, len(self.outputs))))
+        if rect != self.rect:
+            self.prepareGeometryChange()
+            self.rect = rect
+        while len(self.signs) > signs:
+            self._remove_child(self.signs.pop())
+        self.signs += [SignItem(self, i) for i in range(len(self.signs), signs)]
+        for sign in self.signs:
+            sign.update()
+        self.update()
+
+    def _remove_child(self, item: QGraphicsItem) -> None:
+        if item.scene():
+            item.scene().removeItem(item)
+        else:
+            item.setParentItem(None)
 
     def _add_field(self, row: int, name: str) -> None:
         if name == "name":
@@ -528,9 +639,17 @@ class NodeItem(ShiftSelects, QGraphicsItem):
                 painter.drawText(caption, Qt.AlignLeft | Qt.AlignVCenter, FIELD_CAPTIONS[name])
         half = NODE_WIDTH / 2 - 10
         top = self.first_port_row
-        for i, name in enumerate(self.node.type.inputs):
-            label = QRectF(10, GRID * (top + i), half, GRID)
-            painter.drawText(label, Qt.AlignLeft | Qt.AlignVCenter, name)
+        # A growing node's labels all leave room for the sign, so they line up whether or not it's there.
+        left = SIGN_LEFT + 2 * SIGN_SIZE + SIGN_GAP if self.node.type.growing else 10
+        for i, port in enumerate(self.inputs):
+            name = self.node.type.inputs[0 if self.node.type.growing else i]
+            label = QRectF(left, GRID * (top + i), half, GRID)
+            if port.is_open:  # greyed out, like a blank Name box's default: what connecting here does
+                painter.setPen(PLACEHOLDER_TEXT)
+                painter.drawText(label, Qt.AlignLeft | Qt.AlignVCenter, strings.ADD_INPUT)
+                painter.setPen(TEXT)
+            else:
+                painter.drawText(label, Qt.AlignLeft | Qt.AlignVCenter, name)
         for i, name in enumerate(self.node.type.outputs):
             label = QRectF(NODE_WIDTH / 2, GRID * (top + i), half, GRID)
             painter.drawText(label, Qt.AlignRight | Qt.AlignVCenter, name)
@@ -709,15 +828,27 @@ class EditorScene(QGraphicsScene):
         self.commit()
 
     def _add_item(self, node: Node) -> None:
-        item = NodeItem(node)
+        item = NodeItem(node, *self._inputs(node.id))
         self.addItem(item)
         self.node_items[node.id] = item
+
+    def _inputs(self, node_id: int) -> tuple[int, int]:
+        """How many inputs a node shows, and how many of them have signs: a growing node's connected ones."""
+        growing = self.graph.nodes[node_id].type.growing
+        return self.graph.input_count(node_id), len(self.graph.sources(node_id)) if growing else 0
 
     def set_value(self, node_id: int, name: str, value: str) -> None:
         self.graph.set_value(node_id, name, value)
         self.edited.emit()
         if name != "name":  # typing a name is committed when the box is left
             self.commit()
+
+    def set_subtracts(self, node_id: int, index: int, subtracts: bool) -> None:
+        """Make a growing node's input subtract (or add)."""
+        self.graph.set_subtracts(node_id, index, subtracts)
+        self.node_items[node_id].set_inputs(*self._inputs(node_id))
+        self.edited.emit()
+        self.commit()
 
     def node_moved(self, item: NodeItem) -> None:
         node_id = item.node.id
@@ -882,10 +1013,13 @@ class EditorScene(QGraphicsScene):
             self.reveal.emit(area)
 
     def sync_wires(self) -> None:
-        """Make the wire items match the model's connections."""
+        """Make the wire items, and the inputs of growing nodes, match the model's connections."""
         for connection in list(self.wire_items):
             if connection not in self.graph.connections:
                 self.removeItem(self.wire_items.pop(connection))
+        for node_id, item in self.node_items.items():
+            if item.node.type.growing:
+                item.set_inputs(*self._inputs(node_id))
         for connection in self.graph.connections:
             if connection not in self.wire_items:
                 src = self.node_items[connection.src].outputs[connection.src_output]

@@ -17,6 +17,7 @@ import audio
 import strings
 from graph import LEFT, MID_SIDE, RIGHT, Graph, Node
 
+MIX_NAMED_SOURCES = 3  # a Mix of more sources than this is named after the first two: "Drums + Bass + 4 more"
 EXPORT_EXTENSION = ".wav"
 MAX_FILE_NAME = 255  # characters, including the extension
 INVALID_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -104,20 +105,38 @@ def _source_name(graph: Graph, feeds: dict, node_id: int, output: int) -> str:
     if node.type_key == "input":
         return input_name(node)
     sources = []
-    for index in range(len(node.type.inputs)):
+    for index in range(graph.input_count(node_id)):
         source = feeds.get((node_id, index))
-        sources.append(_source_name(graph, feeds, *source) if source else node.type.title)
+        if source:
+            sources.append(_source_name(graph, feeds, *source))
+        elif not node.type.growing:  # a growing node's empty input isn't a source
+            sources.append(node.type.title)
     return _derived_name(node, output, sources)
 
 
 def _derived_name(node: Node, output: int, sources: list[str]) -> str:
-    """What comes out of a processing node's output, named after what feeds each of its inputs: "Song center",
-    "Song inverted", "Song minus Vocals"."""
+    """What comes out of a processing node's output, named after what feeds its inputs: "Song center",
+    "Song inverted", "Song − Instrumental"."""
     if node.type_key == "invert":
         return strings.SOURCE_INVERTED.format(source=sources[0])
-    if node.type_key == "subtract":
-        return strings.SOURCE_MINUS.format(source=sources[0], minus=sources[1])
+    if node.type_key == "mix":
+        return _mix_name(node, sources)
     return strings.SOURCE_OUTPUT.format(source=sources[0], port=node.type.outputs[output])
+
+
+def _mix_name(node: Node, sources: list[str]) -> str:
+    """A Mix named after its sources and their signs: "Drums + Bass", "Song − Instrumental", "−Vocals", or past
+    MIX_NAMED_SOURCES of them, "Drums + Bass + 4 more". "Mix" if nothing is connected."""
+    if not sources:
+        return node.type.title
+    named = sources if len(sources) <= MIX_NAMED_SOURCES else sources[:MIX_NAMED_SOURCES - 1]
+    first = strings.MIX_FIRST_SUBTRACTED if node.subtracts(0) else strings.MIX_FIRST_ADDED
+    name = first.format(source=named[0])
+    for index, source in enumerate(named[1:], start=1):
+        name = (strings.MIX_SUBTRACTED if node.subtracts(index) else strings.MIX_ADDED).format(mix=name, source=source)
+    if len(named) < len(sources):
+        name = strings.MIX_MORE.format(mix=name, count=len(sources) - len(named))
+    return name
 
 
 def output_names(graph: Graph) -> dict[int, str]:
@@ -183,13 +202,14 @@ def make_plan(graph: Graph) -> Plan:
 
     # Nodes with an input left unconnected.
     for node in sorted((graph.nodes[i] for i in needed), key=lambda n: n.id):
+        if node.type.growing:  # its empty input is meant to be empty, but it needs something
+            if not graph.sources(node.id):
+                problems.append(strings.NODE_NOTHING_CONNECTED.format(node=node.type.title))
+            continue
         for index in range(len(node.type.inputs)):
             if (node.id, index) not in feeds:
                 if node.type_key == "output":
                     problems.append(strings.OUTPUT_NOT_CONNECTED.format(output=names[node.id].strip()))
-                elif len(node.type.inputs) > 1:
-                    problems.append(strings.NODE_INPUT_NOT_CONNECTED.format(
-                        node=node.type.title, port=node.type.inputs[index]))
                 else:
                     problems.append(strings.NODE_NOT_CONNECTED.format(node=node.type.title))
 
@@ -247,7 +267,7 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
         node = graph.nodes[node_id]
         if node.type_key == "input":
             return _input_label(node)
-        sources = [describe(*feeds[(node_id, index)]) for index in range(len(node.type.inputs))]
+        sources = [describe(c.src, c.src_output) for c in graph.sources(node_id)]
         return _derived_name(node, output, sources)
 
     def require(node_id: int, output: int) -> tuple:
@@ -285,14 +305,16 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
                 steps.append(Step(strings.STEP_INVERT.format(source=name), _invert(source, key, name, channels),
                                   uses=(source,)))
             return key
-        if node.type_key == "subtract":
+        if node.type_key == "mix":
             key = ("node", node_id, 0)
             if key not in done:
-                a, b = require(*feeds[(node_id, 0)]), require(*feeds[(node_id, 1)])
+                sources = graph.sources(node_id)
+                tracks = tuple(require(c.src, c.src_output) for c in sources)
                 done.add(key)
-                source, minus = describe(*feeds[(node_id, 0)]), describe(*feeds[(node_id, 1)])
-                steps.append(Step(strings.STEP_SUBTRACT.format(source=source, minus=minus),
-                                  _subtract(a, b, key, source, minus), uses=(a, b)))
+                subtracted = [node.subtracts(c.dst_input) for c in sources]
+                name = describe(node_id, 0)
+                steps.append(Step(strings.STEP_MIX.format(sources=name), _mix(tracks, subtracted, key, name),
+                                  uses=tracks))
             return key
         raise ValueError(f"can't compute a {node.type.title} node")
 
@@ -361,12 +383,12 @@ def _invert(source: tuple, key: tuple, name: str, channels: tuple[int, ...]):
     return action
 
 
-def _subtract(a: tuple, b: tuple, key: tuple, source: str, minus: str):
+def _mix(tracks: tuple, subtracted: list[bool], key: tuple, name: str):
     def action(ctx: Context) -> list:
         try:
-            ctx.store[key] = audio.subtract(ctx.store[a], ctx.store[b])
+            ctx.store[key] = audio.mix([ctx.store[track] for track in tracks], subtracted)
         except MemoryError:
-            raise BuildError(strings.NO_MEMORY_SUBTRACT.format(source=source, minus=minus)) from None
+            raise BuildError(strings.NO_MEMORY_MIX.format(sources=name)) from None
         return []
     return action
 

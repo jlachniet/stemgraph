@@ -15,6 +15,14 @@ class NodeType:
     outputs: tuple[str, ...]
     # Editable values shown in the node: "name" (text), "file" (path), or a key of CHOICES (a dropdown).
     fields: tuple[str, ...] = ()
+    # Growing inputs, all named inputs[0]: one per connection, then an empty one below them for adding more. Each
+    # connected input adds or subtracts; see SIGNS.
+    growing: bool = False
+
+    @property
+    def value_names(self) -> tuple[str, ...]:
+        """The values a node of this type may hold: its fields, and SIGNS if its inputs grow."""
+        return (*self.fields, SIGNS) if self.growing else self.fields
 
 
 # Dropdown fields: the values each may hold, in menu order, with their labels and hover text. The first is the
@@ -40,6 +48,11 @@ CHOICES = {
 }
 AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI}
 
+# A growing node's signs value: one character per connected input, top to bottom, "-" for subtracted and "+" for
+# added. Inputs past the end are added, and trailing "+" are dropped, so a node with every input added saves the
+# same as one never touched.
+SIGNS = "signs"
+
 NODE_TYPES = {
     "input": NodeType(strings.NODE_INPUT, (), (strings.PORT_AUDIO,), fields=("name", "file")),
     "split_mid_side": NodeType(
@@ -47,7 +60,7 @@ NODE_TYPES = {
         fields=("algorithm",),
     ),
     "invert": NodeType(strings.NODE_INVERT, (strings.PORT_AUDIO,), (strings.PORT_AUDIO,), fields=("channels",)),
-    "subtract": NodeType(strings.NODE_SUBTRACT, (strings.PORT_AUDIO, strings.PORT_MINUS), (strings.PORT_AUDIO,)),
+    "mix": NodeType(strings.NODE_MIX, (strings.PORT_AUDIO,), (strings.PORT_AUDIO,), growing=True),
     "output": NodeType(strings.NODE_OUTPUT, (strings.PORT_AUDIO,), (), fields=("name",)),
 }
 
@@ -73,6 +86,11 @@ class Node:
         """The value of a dropdown field, with AUTO resolved to the choice it currently stands for."""
         value = self.values.get(name, AUTO)
         return AUTO_CHOICE[name] if value == AUTO and name in AUTO_CHOICE else value
+
+    def subtracts(self, index: int) -> bool:
+        """True if a growing node's input `index` is subtracted rather than added."""
+        signs = self.values.get(SIGNS, "")
+        return index < len(signs) and signs[index] == "-"
 
 
 @dataclass(frozen=True)
@@ -108,15 +126,51 @@ class Graph:
 
     def set_value(self, node_id: int, name: str, value: str) -> None:
         node = self.nodes[node_id]
-        if name not in node.type.fields:
+        if name not in node.type.value_names:
             raise ValueError(f"{node.type.title} has no field {name!r}")
         if name in CHOICES and value not in (choice[0] for choice in CHOICES[name]):
             raise ValueError(f"{value!r} is not a choice for {name!r}")
+        if name == SIGNS:
+            if value.strip("+-"):
+                raise ValueError(f"{value!r} isn't made of signs")
+            value = value.rstrip("+")
         node.values[name] = value
+
+    def set_subtracts(self, node_id: int, index: int, subtracts: bool) -> None:
+        """Make a growing node's input `index` subtract (or add)."""
+        signs = list(self.nodes[node_id].values.get(SIGNS, "").ljust(index + 1, "+"))
+        signs[index] = "-" if subtracts else "+"
+        self.set_value(node_id, SIGNS, "".join(signs))
+
+    def input_count(self, node_id: int) -> int:
+        """How many inputs a node has: its type's, or for growing inputs, one per connection and an empty one for
+        adding more."""
+        node = self.nodes[node_id]
+        if node.type.growing:
+            return len(self.sources(node_id)) + 1
+        return len(node.type.inputs)
+
+    def sources(self, node_id: int) -> list[Connection]:
+        """The connections into a node, by input."""
+        return sorted((c for c in self.connections if c.dst == node_id), key=lambda c: c.dst_input)
+
+    def _close_gaps(self, node_id: int) -> None:
+        """Renumber a growing node's connections to inputs 0, 1, 2, … in order, moving their signs with them."""
+        node = self.nodes.get(node_id)
+        if node is None or not node.type.growing:
+            return
+        sources = self.sources(node_id)
+        signs = "".join("-" if node.subtracts(c.dst_input) else "+" for c in sources)
+        self.connections -= set(sources)
+        self.connections |= {Connection(c.src, c.src_output, node_id, i) for i, c in enumerate(sources)}
+        self.set_value(node_id, SIGNS, signs)
 
     def remove_node(self, node_id: int) -> None:
         del self.nodes[node_id]
+        fed = {c.dst for c in self.connections if c.src == node_id}
         self.connections = {c for c in self.connections if node_id not in (c.src, c.dst)}
+        for dst in fed:
+            self._close_gaps(dst)
 
     def connect(self, src: int, src_output: int, dst: int, dst_input: int) -> Connection | None:
         """Connect an output to an input, replacing any wire already on that input.
@@ -127,7 +181,7 @@ class Graph:
             return None
         if not 0 <= src_output < len(self.nodes[src].type.outputs):
             return None
-        if not 0 <= dst_input < len(self.nodes[dst].type.inputs):
+        if not 0 <= dst_input < self.input_count(dst):
             return None
         if self._reaches(dst, src):
             return None
@@ -140,7 +194,9 @@ class Graph:
         return connection
 
     def disconnect(self, connection: Connection) -> None:
-        self.connections.discard(connection)
+        if connection in self.connections:
+            self.connections.discard(connection)
+            self._close_gaps(connection.dst)
 
     # --- Whole-graph state, for undo ---
 
@@ -167,15 +223,17 @@ class Graph:
     def fragment(self, node_ids) -> dict:
         """The given nodes and the connections between them, as JSON-ready data for the clipboard."""
         ids = set(node_ids)
+        # A copy of just these nodes, so growing nodes whose sources weren't all copied close their gaps.
+        piece = Graph()
+        piece.set_state(self.state())
+        for node_id in self.nodes:
+            if node_id not in ids:
+                piece.remove_node(node_id)
         nodes = [
             {"id": n.id, "type": n.type_key, "x": n.x, "y": n.y, "values": {k: v for k, v in n.values.items() if v}}
-            for n in sorted(self.nodes.values(), key=lambda n: n.id) if n.id in ids
+            for n in sorted(piece.nodes.values(), key=lambda n: n.id)
         ]
-        connections = [
-            [c.src, c.src_output, c.dst, c.dst_input]
-            for c in sorted(self.connections, key=lambda c: (c.src, c.src_output, c.dst, c.dst_input))
-            if c.src in ids and c.dst in ids
-        ]
+        connections = [[c.src, c.src_output, c.dst, c.dst_input] for c in in_order(piece.connections)]
         return {"format": FRAGMENT_FORMAT, "nodes": nodes, "connections": connections}
 
     def paste(self, piece: "Graph", x: float, y: float) -> list[int]:
@@ -193,7 +251,7 @@ class Graph:
                 if name == "name" and value:
                     value = self._free_name(old.type_key, value)
                 self.set_value(node.id, name, value)
-        for c in piece.connections:
+        for c in in_order(piece.connections):
             self.connect(new_ids[c.src], c.src_output, new_ids[c.dst], c.dst_input)
         return list(new_ids.values())
 
@@ -224,6 +282,12 @@ class Graph:
 FRAGMENT_FORMAT = "stemgraph-nodes"
 
 
+def in_order(connections) -> list[Connection]:
+    """Connections in the order to connect them: by destination input, since a growing node's input only exists
+    once the inputs above it are connected."""
+    return sorted(connections, key=lambda c: (c.dst, c.dst_input, c.src, c.src_output))
+
+
 def load_fragment(data) -> Graph | None:
     """The nodes and connections in clipboard data made by `Graph.fragment`, or None if it isn't valid. The data
     may come from another copy of stemgraph, maybe another version, so nothing about it is trusted."""
@@ -240,8 +304,11 @@ def load_fragment(data) -> Graph | None:
                 if not isinstance(value, str):
                     return None
                 piece.set_value(node.id, name, value)
-        for entry in data["connections"]:
-            if len(entry) != 4 or piece.connect(*entry) is None:
+        entries = data["connections"]
+        if any(len(entry) != 4 for entry in entries):
+            return None
+        for entry in sorted(entries, key=lambda e: (e[2], e[3], e[0], e[1])):
+            if piece.connect(*entry) is None:
                 return None
     except (AttributeError, KeyError, TypeError, ValueError):
         return None

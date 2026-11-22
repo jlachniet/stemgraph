@@ -206,11 +206,15 @@ def invert(x: np.ndarray, channels: tuple[int, ...]) -> np.ndarray:
     return y
 
 
-def subtract(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """a − b, the shorter padded with silence at the end, so the result is as long as the longer."""
-    y = np.zeros((max(len(a), len(b)), a.shape[1]))
-    y[:len(a)] += a
-    y[:len(b)] -= b
+def mix(tracks: list[np.ndarray], subtracted: list[bool]) -> np.ndarray:
+    """The sum of the tracks, with the subtracted ones taken away instead. Shorter tracks are padded with silence
+    at the end, so the result is as long as the longest."""
+    y = np.zeros((max(len(track) for track in tracks), CHANNELS))
+    for track, minus in zip(tracks, subtracted, strict=True):
+        if minus:
+            y[:len(track)] -= track
+        else:
+            y[:len(track)] += track
     return y
 
 

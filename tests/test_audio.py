@@ -150,19 +150,20 @@ def test_invert_flips_only_the_given_channels(channels):
         assert np.array_equal(y[:, channel], expected)
 
 
-def test_subtract_takes_minus_from_audio():
+def test_mix_adds_and_subtracts():
     rng = np.random.default_rng(10)
-    a, b = rng.uniform(-1, 1, (1000, 2)), rng.uniform(-1, 1, (1000, 2))
-    originals = a.copy(), b.copy()
-    assert np.array_equal(audio.subtract(a, b), a - b)
-    assert np.array_equal(a, originals[0]) and np.array_equal(b, originals[1])  # the inputs are left alone
+    a, b, c = (rng.uniform(-1, 1, (1000, 2)) for _ in range(3))
+    originals = a.copy(), b.copy(), c.copy()
+    assert np.allclose(audio.mix([a, b, c], [False, True, False]), a - b + c, rtol=0, atol=1e-15)
+    assert all(np.array_equal(x, o) for x, o in zip((a, b, c), originals, strict=True))  # the inputs are left alone
+    assert np.array_equal(audio.mix([a], [True]), -a)
 
 
 @pytest.mark.parametrize("a_frames, b_frames", [(1000, 600), (600, 1000)])
-def test_subtract_pads_the_shorter_input_with_silence(a_frames, b_frames):
+def test_mix_pads_shorter_tracks_with_silence(a_frames, b_frames):
     rng = np.random.default_rng(11)
     a, b = rng.uniform(-1, 1, (a_frames, 2)), rng.uniform(-1, 1, (b_frames, 2))
-    y = audio.subtract(a, b)
+    y = audio.mix([a, b], [False, True])
     assert len(y) == 1000
     padded_a, padded_b = np.zeros((1000, 2)), np.zeros((1000, 2))
     padded_a[:a_frames], padded_b[:b_frames] = a, b

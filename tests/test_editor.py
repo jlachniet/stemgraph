@@ -1,11 +1,11 @@
 import pytest
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QGraphicsProxyWidget, QLabel, QMenu, QWidgetAction
 
 from editor import FIT_MARGIN, PLACEHOLDER_TEXT, ChoiceField, EditorView, add_menu_heading
-from graph import GRID, Graph
+from graph import GRID, NODE_TYPES, Connection, Graph
 from project import ViewState
 
 
@@ -171,12 +171,59 @@ def test_invert_channels_is_a_dropdown_defaulting_to_both(view):
     assert graph.nodes[invert.id].values["channels"] == "right"
 
 
-def test_subtract_has_two_inputs_and_one_output(view):
+@pytest.mark.parametrize("key", NODE_TYPES)
+def test_every_node_has_a_body_fitting_its_rows(view, key):
     graph = Graph()
-    subtract = graph.add_node("subtract", 0, 0)
+    node = graph.add_node(key, 0, 0)
     view.set_graph(graph, ViewState())
-    item = view.scene().node_items[subtract.id]
-    assert len(item.inputs) == 2 and len(item.outputs) == 1 and not item.fields
+    item = view.scene().node_items[node.id]
+    rows = 1 + len(node.type.fields) + max(graph.input_count(node.id), len(node.type.outputs))
+    assert item.rect == QRectF(0, 0, item.rect.width(), rows * GRID) and item.rect.width() > 0
+
+
+def test_mix_inputs_grow_and_shrink_with_its_wires(view):
+    graph = Graph()
+    a, b = graph.add_node("input", 0, 0), graph.add_node("input", 0, 96)
+    mix = graph.add_node("mix", 240, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    item = scene.node_items[mix.id]
+    assert [port.is_open for port in item.inputs] == [True] and not item.signs  # just the empty input
+    height = item.rect.height()
+    scene.connect_ports(scene.node_items[a.id].outputs[0], item.inputs[0])
+    assert len(item.inputs) == 2 and len(item.signs) == 1
+    scene.connect_ports(scene.node_items[b.id].outputs[0], item.inputs[1])
+    assert len(item.inputs) == 3 and len(item.signs) == 2
+    assert [port.is_open for port in item.inputs] == [False, False, True]  # only the new empty one
+    assert item.rect.height() == height + 2 * GRID
+    scene.wire_items[Connection(a.id, 0, mix.id, 0)].setSelected(True)
+    scene.delete_selected()
+    assert len(item.inputs) == 2 and len(item.signs) == 1
+    assert scene.wire_items[Connection(b.id, 0, mix.id, 0)].dst is item.inputs[0]  # moved up to close the gap
+
+
+def test_clicking_a_sign_chooses_it_as_one_undo_step(view):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    mix = graph.add_node("mix", 240, 0)
+    graph.connect(song.id, 0, mix.id, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+
+    def click(minus: bool) -> None:
+        sign = scene.node_items[mix.id].signs[0]
+        point = sign.mapToScene(sign._half(minus).center())
+        QTest.mouseClick(view.viewport(), Qt.LeftButton, Qt.NoModifier, view.mapFromScene(point))
+
+    click(minus=False)  # already added
+    assert not graph.nodes[mix.id].subtracts(0) and not scene.can_undo()
+    click(minus=True)
+    assert graph.nodes[mix.id].subtracts(0)
+    click(minus=True)  # choosing it again changes nothing
+    assert graph.nodes[mix.id].subtracts(0)
+    scene.undo()
+    assert not graph.nodes[mix.id].subtracts(0)
+    assert not scene.node_items[mix.id].signs[0].subtracts()
 
 
 def test_open_dropdown_is_drawn_above_ports_and_other_nodes(view):

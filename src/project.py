@@ -71,7 +71,7 @@ def dumps(graph: Graph, view: ViewState, project_path: str) -> str:
     nodes = []
     for node in sorted(graph.nodes.values(), key=lambda n: n.id):
         values = {}
-        for name in node.type.fields:  # in the type's field order, for stable files
+        for name in node.type.value_names:  # in the type's field order, for stable files
             value = node.values.get(name)
             if value:
                 values[name] = path_to_file(value, project_dir) if name in PATH_FIELDS else value
@@ -162,16 +162,19 @@ def loads(text: str, project_path: str) -> tuple[Graph, ViewState]:
             raise ProjectError(strings.INVALID_NODE)
         node = graph.add_node(type_key, _int(entry.get("x")), _int(entry.get("y")), node_id=node_id)
         for name, value in _dict(entry.get("values", {})).items():
-            if name not in node.type.fields or not isinstance(value, str):
+            if name not in node.type.value_names or not isinstance(value, str):
                 raise ProjectError(strings.INVALID_NODE)
             try:
                 graph.set_value(node.id, name, path_from_file(value, project_dir) if name in PATH_FIELDS else value)
-            except ValueError:  # not one of a dropdown's choices
+            except ValueError:  # not one of a dropdown's choices, or not signs
                 raise ProjectError(strings.INVALID_NODE) from None
 
+    connections = []
     for entry in _list(data.get("connections", [])):
         entry = _dict(entry)
-        ends = [_int(entry.get(key)) for key in ("src", "src_output", "dst", "dst_input")]
+        connections.append([_int(entry.get(key)) for key in ("src", "src_output", "dst", "dst_input")])
+    # By destination input: a growing node's input only exists once the inputs above it are connected.
+    for ends in sorted(connections, key=lambda ends: (ends[2], ends[3], ends[0], ends[1])):
         before = len(graph.connections)
         # Graph.connect enforces the same rules as the editor; it also silently replaces a wire on the same
         # input, which a valid file never needs.

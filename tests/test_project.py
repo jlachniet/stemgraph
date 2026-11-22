@@ -176,12 +176,14 @@ def test_invert_channels_round_trip_and_both_is_not_saved():
     assert loaded.nodes[invert.id].values["channels"] == "left"
 
 
-def test_subtract_with_both_inputs_round_trips():
+def test_mix_with_signs_round_trips():
     graph = Graph()
-    song, vocals = graph.add_node("input", 0, 0), graph.add_node("input", 0, 100)
-    subtract = graph.add_node("subtract", 200, 0)
-    graph.connect(song.id, 0, subtract.id, 0)
-    graph.connect(vocals.id, 0, subtract.id, 1)
+    sources = [graph.add_node("input", 0, 96 * i) for i in range(3)]
+    mix = graph.add_node("mix", 240, 0)
+    # Wired bottom source first, so the file (sorted by source) doesn't list them in input order.
+    for index, source in enumerate(reversed(sources)):
+        graph.connect(source.id, 0, mix.id, index)
+    graph.set_subtracts(mix.id, 1, True)
     loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
     assert snapshot(loaded) == snapshot(graph)
 

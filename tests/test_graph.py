@@ -133,6 +133,54 @@ def test_auto_resolves_to_its_current_choice():
 # --- Undo state ---
 
 
+def test_mix_inputs_grow_with_one_empty_input():
+    graph, (a, b, mix) = make("input", "input", "mix")
+    assert graph.input_count(mix) == 1  # just the empty one for adding to
+    assert graph.connect(a, 0, mix, 1) is None  # only the empty input below the connected ones exists
+    graph.connect(a, 0, mix, 0)
+    assert graph.input_count(mix) == 2
+    graph.connect(b, 0, mix, 1)
+    assert graph.input_count(mix) == 3
+    graph.connect(b, 0, mix, 0)  # onto a connected input: replaces that wire
+    assert graph.input_count(mix) == 3
+
+
+def test_mix_closes_gaps_and_keeps_signs_with_their_wires():
+    graph, (a, b, c, mix) = make("input", "input", "input", "mix")
+    for index, source in enumerate((a, b, c)):
+        graph.connect(source, 0, mix, index)
+    graph.set_subtracts(mix, 2, True)
+    assert graph.nodes[mix].values["signs"] == "++-"
+    graph.disconnect(Connection(a, 0, mix, 0))
+    assert graph.sources(mix) == [Connection(b, 0, mix, 0), Connection(c, 0, mix, 1)]
+    assert graph.nodes[mix].values["signs"] == "+-"
+    graph.remove_node(c)
+    assert graph.sources(mix) == [Connection(b, 0, mix, 0)] and graph.input_count(mix) == 2
+    assert graph.nodes[mix].values["signs"] == ""  # all added again: saves like an untouched Mix
+
+
+def test_signs_are_checked_and_trimmed():
+    graph, (mix,) = make("mix")
+    graph.set_value(mix, "signs", "-++")
+    assert graph.nodes[mix].values["signs"] == "-"
+    with pytest.raises(ValueError):
+        graph.set_value(mix, "signs", "+x")
+    split = graph.add_node("split_mid_side", 0, 0)
+    with pytest.raises(ValueError):
+        graph.set_value(split.id, "signs", "-")
+
+
+def test_copying_a_mix_without_some_sources_closes_its_gaps():
+    graph, (a, b, c, mix) = make("input", "input", "input", "mix")
+    for index, source in enumerate((a, b, c)):
+        graph.connect(source, 0, mix, index)
+    graph.set_subtracts(mix, 2, True)
+    copy = Graph()
+    new_c, new_mix = pasted(copy, graph, [c, mix])
+    assert copy.sources(new_mix.id) == [Connection(new_c.id, 0, new_mix.id, 0)]
+    assert new_mix.subtracts(0)
+
+
 def test_set_state_restores_nodes_values_and_connections():
     graph, (file, out) = make("input", "output")
     graph.set_value(file, "name", "Song")
