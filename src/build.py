@@ -15,7 +15,7 @@ from pathlib import Path
 
 import audio
 import strings
-from graph import MID_SIDE, Graph, Node
+from graph import LEFT, MID_SIDE, RIGHT, Graph, Node
 
 EXPORT_EXTENSION = ".wav"
 MAX_FILE_NAME = 255  # characters, including the extension
@@ -105,7 +105,14 @@ def _source_name(graph: Graph, feeds: dict, node_id: int, output: int) -> str:
         return input_name(node)
     source = feeds.get((node_id, 0))
     base = _source_name(graph, feeds, *source) if source else node.type.title
-    return strings.SOURCE_OUTPUT.format(source=base, port=node.type.outputs[output])
+    return _derived_name(node, output, base)
+
+
+def _derived_name(node: Node, output: int, source: str) -> str:
+    """What comes out of a processing node's output, named after its source: "Song center", "Song inverted"."""
+    if node.type_key == "invert":
+        return strings.SOURCE_INVERTED.format(source=source)
+    return strings.SOURCE_OUTPUT.format(source=source, port=node.type.outputs[output])
 
 
 def output_names(graph: Graph) -> dict[int, str]:
@@ -232,8 +239,7 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
         node = graph.nodes[node_id]
         if node.type_key == "input":
             return _input_label(node)
-        source = feeds[(node_id, 0)]
-        return strings.SOURCE_OUTPUT.format(source=describe(*source), port=node.type.outputs[output])
+        return _derived_name(node, output, describe(*feeds[(node_id, 0)]))
 
     def require(node_id: int, output: int) -> tuple:
         """Add the steps that produce this node output, if not already there; return its store key."""
@@ -260,6 +266,16 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
                 algorithm = node.choice("algorithm")
                 steps.append(Step(label, _split(source, keys, name, algorithm), uses=(source,)))
             return keys[output]
+        if node.type_key == "invert":
+            key = ("node", node_id, 0)
+            if key not in done:
+                source = require(*feeds[(node_id, 0)])
+                done.add(key)
+                name = describe(*feeds[(node_id, 0)])
+                channels = {LEFT: (0,), RIGHT: (1,)}.get(node.choice("channels"), (0, 1))
+                steps.append(Step(strings.STEP_INVERT.format(source=name), _invert(source, key, name, channels),
+                                  uses=(source,)))
+            return key
         raise ValueError(f"can't compute a {node.type.title} node")
 
     files = []
@@ -313,6 +329,16 @@ def _split(source: tuple, keys: tuple, name: str, algorithm: str):
             ctx.store[keys[0]], ctx.store[keys[1]] = halves
         except MemoryError:
             raise BuildError(strings.NO_MEMORY_SPLIT.format(source=name)) from None
+        return []
+    return action
+
+
+def _invert(source: tuple, key: tuple, name: str, channels: tuple[int, ...]):
+    def action(ctx: Context) -> list:
+        try:
+            ctx.store[key] = audio.invert(ctx.store[source], channels)
+        except MemoryError:
+            raise BuildError(strings.NO_MEMORY_INVERT.format(source=name)) from None
         return []
     return action
 

@@ -159,6 +159,18 @@ def test_split_algorithm_is_a_dropdown_defaulting_to_auto(view):
     assert graph.nodes[split.id].values["algorithm"] == ""
 
 
+def test_invert_channels_is_a_dropdown_defaulting_to_both(view):
+    graph = Graph()
+    invert = graph.add_node("invert", 0, 0)
+    view.set_graph(graph, ViewState())
+    (proxy,) = view.scene().node_items[invert.id].fields
+    field = proxy.widget()
+    assert [field.itemText(i) for i in range(field.count())] == ["Both", "Left", "Right"]
+    assert field.currentIndex() == 0
+    field.setCurrentIndex(2)
+    assert graph.nodes[invert.id].values["channels"] == "right"
+
+
 def test_open_dropdown_is_drawn_above_ports_and_other_nodes(view):
     graph = Graph()
     split = graph.add_node("split_mid_side", 0, 0)

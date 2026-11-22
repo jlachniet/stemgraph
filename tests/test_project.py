@@ -167,6 +167,15 @@ def test_algorithm_round_trips_and_auto_is_not_saved():
     assert snapshot(graph) == snapshot(untouched)
 
 
+def test_invert_channels_round_trip_and_both_is_not_saved():
+    graph = Graph()
+    invert = graph.add_node("invert", 0, 0)
+    assert json.loads(dumps(graph, ViewState(), "."))["nodes"][0]["values"] == {}
+    graph.set_value(invert.id, "channels", "left")
+    loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
+    assert loaded.nodes[invert.id].values["channels"] == "left"
+
+
 def test_rejects_unknown_algorithm():
     node = {"id": 1, "type": "split_mid_side", "x": 0, "y": 0, "values": {"algorithm": "fancy"}}
     with pytest.raises(ProjectError):

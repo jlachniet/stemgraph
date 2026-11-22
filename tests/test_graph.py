@@ -111,6 +111,17 @@ def test_algorithm_is_a_choice():
         graph.set_value(split.id, "algorithm", "fancy")
 
 
+def test_invert_channels_is_a_choice_defaulting_to_both():
+    graph = Graph()
+    invert = graph.add_node("invert", 0, 0)
+    assert invert.choice("channels") == ""  # Both: a plain choice, not Auto
+    graph.set_value(invert.id, "channels", "left")
+    assert invert.choice("channels") == "left"
+    graph.set_value(invert.id, "channels", "right")
+    with pytest.raises(ValueError):
+        graph.set_value(invert.id, "channels", "middle")
+
+
 def test_auto_resolves_to_its_current_choice():
     graph = Graph()
     split = graph.add_node("split_mid_side", 0, 0)

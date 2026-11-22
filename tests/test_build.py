@@ -212,6 +212,29 @@ def test_chained_splits_are_described_by_their_source(tmp_path):
     assert "Splitting Song side into center and side" in [s.label for s in make_plan(g).steps]
 
 
+def add_invert(g: Graph, source: int | None, src_output=0, channels="") -> int:
+    node = g.add_node("invert", 250, 0)
+    g.set_value(node.id, "channels", channels)
+    if source is not None:
+        g.connect(source, src_output, node.id, 0)
+    return node.id
+
+
+def test_inverted_outputs_are_named_after_their_source(tmp_path):
+    g = Graph()
+    song = add_input(g, "Song", tone(tmp_path / "song.wav"))
+    add_output(g, "", add_invert(g, song), y=0)
+    add_output(g, "", add_invert(g, add_split(g, song), 0), y=100)
+    add_output(g, "", add_invert(g, None), y=200)
+    assert list(build.output_names(g).values()) == ["Song inverted", "Song center inverted", "Invert inverted"]
+
+
+def test_unconnected_invert_is_a_problem(tmp_path):
+    g = Graph()
+    add_output(g, "Out", add_invert(g, None))
+    assert "Invert" in " ".join(problems(g))
+
+
 # --- Running ---
 
 
@@ -241,6 +264,20 @@ def test_build_writes_the_split(tmp_path):
     expected_mid, expected_side = audio.split_paulus_torcoli(source)
     assert np.array_equal(mid, expected_mid.astype(np.float32))
     assert np.array_equal(side, expected_side.astype(np.float32))
+
+
+@pytest.mark.parametrize("channels, signs", [("", (-1, -1)), ("left", (-1, 1)), ("right", (1, -1))])
+def test_build_writes_the_inverted_audio(tmp_path, channels, signs):
+    out = tmp_path / "out"
+    out.mkdir()
+    path = tone(tmp_path / "song.wav")
+    g = Graph()
+    add_output(g, "Out", add_invert(g, add_input(g, "Song", path), channels=channels))
+    plan = make_plan(g)
+    assert "Inverting Song" in [s.label for s in plan.steps]
+    assert run(plan, out)[0]
+    source = read(path)
+    assert np.array_equal(read(out / "Out.wav"), source * np.array(signs, dtype=np.float32))
 
 
 def test_mono_input_is_logged_and_copied(tmp_path):

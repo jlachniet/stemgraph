@@ -199,6 +199,13 @@ def resample(x: np.ndarray, rate_in: int, rate_out: int, cancelled: Callable[[],
 
 # --- Processing ---
 
+def invert(x: np.ndarray, channels: tuple[int, ...]) -> np.ndarray:
+    """A copy of `x` with the given channels (column indices) flipped in polarity."""
+    y = x.copy()
+    y[:, list(channels)] *= -1
+    return y
+
+
 def split_mid_side(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """The classic split: mid (M, M) and side (S, −S), where M = (L + R)/2 and S = (L − R)/2.
 

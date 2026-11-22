@@ -139,6 +139,17 @@ def test_mid_side_split_has_mono_side_inverted_on_the_right():
     assert np.array_equal(side[:, 0], -side[:, 1])
 
 
+@pytest.mark.parametrize("channels", [(0, 1), (0,), (1,)])
+def test_invert_flips_only_the_given_channels(channels):
+    x = np.random.default_rng(9).uniform(-1, 1, (1000, 2))
+    original = x.copy()
+    y = audio.invert(x, channels)
+    assert np.array_equal(x, original)  # the input is left alone
+    for channel in range(2):
+        expected = -x[:, channel] if channel in channels else x[:, channel]
+        assert np.array_equal(y[:, channel], expected)
+
+
 def test_split_can_be_cancelled():
     with pytest.raises(audio.Cancelled):
         audio.split_paulus_torcoli(np.zeros((1000, 2)), cancelled=lambda: True)

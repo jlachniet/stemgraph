@@ -17,18 +17,25 @@ class NodeType:
     fields: tuple[str, ...] = ()
 
 
-# Dropdown fields: the values each may hold, in menu order, with their labels and hover text. The first is AUTO,
-# the default:
-# whichever choice AUTO_CHOICE names, which may change between versions. It's stored as "" so that a node left on
-# it saves the same as one never touched.
+# Dropdown fields: the values each may hold, in menu order, with their labels and hover text. The first is the
+# default and is stored as "", so that a node left on it saves the same as one never touched. For a field in
+# AUTO_CHOICE that first choice is AUTO: whichever choice AUTO_CHOICE names, which may change between versions.
 AUTO = ""
 PAULUS_TORCOLI = "paulus_torcoli"
 MID_SIDE = "mid_side"
+BOTH = ""
+LEFT = "left"
+RIGHT = "right"
 CHOICES = {
     "algorithm": (
         (AUTO, strings.ALGORITHM_AUTO, ""),
         (PAULUS_TORCOLI, strings.ALGORITHM_PAULUS_TORCOLI, strings.ALGORITHM_PAULUS_TORCOLI_TIP),
         (MID_SIDE, strings.ALGORITHM_MID_SIDE, strings.ALGORITHM_MID_SIDE_TIP),
+    ),
+    "channels": (
+        (BOTH, strings.CHANNELS_BOTH, strings.CHANNELS_BOTH_TIP),
+        (LEFT, strings.CHANNELS_LEFT, strings.CHANNELS_LEFT_TIP),
+        (RIGHT, strings.CHANNELS_RIGHT, strings.CHANNELS_RIGHT_TIP),
     ),
 }
 AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI}
@@ -39,6 +46,7 @@ NODE_TYPES = {
         strings.NODE_SPLIT_CENTER_SIDE, (strings.PORT_AUDIO,), (strings.PORT_CENTER, strings.PORT_SIDE),
         fields=("algorithm",),
     ),
+    "invert": NodeType(strings.NODE_INVERT, (strings.PORT_AUDIO,), (strings.PORT_AUDIO,), fields=("channels",)),
     "output": NodeType(strings.NODE_OUTPUT, (strings.PORT_AUDIO,), (), fields=("name",)),
 }
 
@@ -63,7 +71,7 @@ class Node:
     def choice(self, name: str) -> str:
         """The value of a dropdown field, with AUTO resolved to the choice it currently stands for."""
         value = self.values.get(name, AUTO)
-        return AUTO_CHOICE[name] if value == AUTO else value
+        return AUTO_CHOICE[name] if value == AUTO and name in AUTO_CHOICE else value
 
 
 @dataclass(frozen=True)

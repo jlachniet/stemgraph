@@ -101,10 +101,11 @@ BAND_SCROLL_MARGIN = GRID  # screen px from the window edge where dragging a sel
 BAND_SCROLL_MAX = 40  # fastest selection-box scrolling, in screen px per tick
 BAND_SCROLL_INTERVAL = 16  # ms between selection-box scrolling ticks
 
-# Right-click "add node" menu, with a divider between groups.
+# Right-click "add node" menu, with a divider between groups. Input and Output come first; keep every other
+# group sorted alphabetically by node title (what the menu shows), not by type key, when adding a node type.
 MENU_GROUPS = [
     ["input", "output"],
-    ["split_mid_side"],
+    ["invert", "split_mid_side"],
 ]
 
 # Radix Colors dark scales (see docs/design.md)
@@ -350,7 +351,11 @@ class PortItem(QGraphicsEllipseItem):
                 break
 
 
-FIELD_CAPTIONS = {"name": strings.NAME_CAPTION, "algorithm": strings.ALGORITHM_CAPTION}
+FIELD_CAPTIONS = {
+    "name": strings.NAME_CAPTION,
+    "algorithm": strings.ALGORITHM_CAPTION,
+    "channels": strings.CHANNELS_CAPTION,
+}
 OPEN_POPUP_Z = 10  # stacking level of a node with an open dropdown, and of that dropdown's field
 
 
@@ -457,7 +462,7 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         field = ChoiceField()
         labels = {value: label for value, label, _ in CHOICES[name]}
         for value, label, tip in CHOICES[name]:
-            if value == AUTO:
+            if value == AUTO and name in AUTO_CHOICE:
                 field.addItem(strings.AUTO_LIST_LABEL.format(choice=labels[AUTO_CHOICE[name]]), value)
                 field.setItemData(field.count() - 1, label, ChoiceField.SHORT_LABEL_ROLE)
             else:
