@@ -13,7 +13,8 @@ class NodeType:
     title: str
     inputs: tuple[str, ...]
     outputs: tuple[str, ...]
-    # Editable values shown in the node: "name" (text), "file" (path), or a key of CHOICES (a dropdown).
+    # Editable values shown in the node: "name" (text), "file" (path), a key of CHOICES (a dropdown) or a key of
+    # TOGGLES (a checkbox).
     fields: tuple[str, ...] = ()
     # Growing inputs, all named inputs[0]: one per connection, then an empty one below them for adding more. Each
     # connected input adds or subtracts; see SIGNS.
@@ -61,6 +62,11 @@ CHOICES = {
 }
 AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI, "alignment": GCC_PHAT}
 
+# Checkbox fields, each with the fields of its node shown only while it's checked. Checked is the default and is
+# stored as "", so that a node left on it saves the same as one never touched; unchecked is OFF.
+OFF = "off"
+TOGGLES = {"align": ("alignment",)}
+
 # A growing node's signs value: one character per connected input, top to bottom, "-" for subtracted and "+" for
 # added. Inputs past the end are added, and trailing "+" are dropped, so a node with every input added saves the
 # same as one never touched.
@@ -78,6 +84,10 @@ NODE_TYPES = {
     ),
     "invert": NodeType(strings.NODE_INVERT, (strings.PORT_AUDIO,), (strings.PORT_AUDIO,), fields=("channels",)),
     "mix": NodeType(strings.NODE_MIX, (strings.PORT_AUDIO,), (strings.PORT_AUDIO,), growing=True),
+    "subtract": NodeType(
+        strings.NODE_SUBTRACT, (strings.PORT_AUDIO, strings.PORT_MINUS), (strings.PORT_AUDIO,),
+        fields=("align", "alignment"),
+    ),
     "output": NodeType(strings.NODE_OUTPUT, (strings.PORT_AUDIO,), (), fields=("name",)),
 }
 
@@ -103,6 +113,16 @@ class Node:
         """The value of a dropdown field, with AUTO resolved to the choice it currently stands for."""
         value = self.values.get(name, AUTO)
         return AUTO_CHOICE[name] if value == AUTO and name in AUTO_CHOICE else value
+
+    def is_on(self, name: str) -> bool:
+        """Whether a checkbox field is checked."""
+        return self.values.get(name, "") != OFF
+
+    def shown_fields(self) -> tuple[str, ...]:
+        """The fields the node shows: all of its type's, but those of an unchecked checkbox."""
+        hidden = {f for toggle in self.type.fields if toggle in TOGGLES and not self.is_on(toggle)
+                  for f in TOGGLES[toggle]}
+        return tuple(f for f in self.type.fields if f not in hidden)
 
     def subtracts(self, index: int) -> bool:
         """True if a growing node's input `index` is subtracted rather than added."""
@@ -147,6 +167,8 @@ class Graph:
             raise ValueError(f"{node.type.title} has no field {name!r}")
         if name in CHOICES and value not in (choice[0] for choice in CHOICES[name]):
             raise ValueError(f"{value!r} is not a choice for {name!r}")
+        if name in TOGGLES and value not in ("", OFF):
+            raise ValueError(f"{value!r} is not a checkbox value")
         if name == SIGNS:
             if value.strip("+-"):
                 raise ValueError(f"{value!r} isn't made of signs")

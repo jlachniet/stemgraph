@@ -145,6 +145,22 @@ def test_align_has_audio_and_reference_inputs_and_two_choices():
         graph.set_value(align.id, "polarity", "flip")
 
 
+def test_subtract_aligns_first_unless_unchecked_which_hides_the_algorithm():
+    graph = Graph()
+    subtract = graph.add_node("subtract", 0, 0)
+    assert subtract.type.inputs == ("audio", "minus") and subtract.type.outputs == ("audio",)
+    assert subtract.is_on("align") and subtract.shown_fields() == ("align", "alignment")
+    assert subtract.choice("alignment") == "gcc_phat"  # the same choices as an Align
+    graph.set_value(subtract.id, "align", "off")
+    assert not subtract.is_on("align") and subtract.shown_fields() == ("align",)
+    graph.set_value(subtract.id, "align", "")
+    assert subtract.is_on("align")
+    with pytest.raises(ValueError):
+        graph.set_value(subtract.id, "align", "yes")
+    with pytest.raises(ValueError):
+        graph.set_value(subtract.id, "polarity", "keep")  # always matched
+
+
 # --- Undo state ---
 
 

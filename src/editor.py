@@ -41,6 +41,7 @@ from PySide6.QtGui import (
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGraphicsEllipseItem,
@@ -61,7 +62,20 @@ from PySide6.QtWidgets import (
 
 import build
 import strings
-from graph import AUTO, AUTO_CHOICE, CHOICES, GRID, NODE_TYPES, Connection, Graph, Node, load_fragment, snap
+from graph import (
+    AUTO,
+    AUTO_CHOICE,
+    CHOICES,
+    GRID,
+    NODE_TYPES,
+    OFF,
+    TOGGLES,
+    Connection,
+    Graph,
+    Node,
+    load_fragment,
+    snap,
+)
 from project import ViewState
 
 NODE_WIDTH = 8 * GRID
@@ -114,7 +128,7 @@ BAND_SCROLL_INTERVAL = 16  # ms between selection-box scrolling ticks
 # group sorted alphabetically by node title (what the menu shows), not by type key, when adding a node type.
 MENU_GROUPS = [
     ["input", "output"],
-    ["align", "invert", "mix", "split_mid_side"],
+    ["align", "invert", "mix", "split_mid_side", "subtract"],
 ]
 
 # Radix Colors dark scales (see docs/design.md)
@@ -347,7 +361,7 @@ class PortItem(QGraphicsEllipseItem):
         self.node_item = node_item
         self.is_output = is_output
         self.index = index
-        self.setPos(NODE_WIDTH if is_output else 0, GRID * (node_item.first_port_row + index + 0.5))
+        self.place()
         self.is_target = False  # a wire being dragged can connect here
         self._lit = 0.0  # how far it's drawn as a target, 0 to 1, while it changes
         self._lighting: QVariantAnimation | None = None  # made the first time it's needed
@@ -356,6 +370,10 @@ class PortItem(QGraphicsEllipseItem):
         # While dragging from this port: a dashed wire from each port being connected (several when dragging
         # the output of one of several selected nodes) to the mouse.
         self._drag_wires: list[tuple[PortItem, QGraphicsPathItem]] = []
+
+    def place(self) -> None:
+        """Put the port in its row, below the node's shown fields."""
+        self.setPos(NODE_WIDTH if self.is_output else 0, GRID * (self.node_item.first_port_row + self.index + 0.5))
 
     def set_open(self, open: bool) -> None:
         """Draw the port as a filled dot, or, for the empty input a growing node keeps for adding more, a ring."""
@@ -435,6 +453,8 @@ FIELD_CAPTIONS = {
     "alignment": strings.ALGORITHM_CAPTION,
     "polarity": strings.POLARITY_CAPTION,
 }
+TOGGLE_LABELS = {"align": (strings.ALIGN_FIRST, strings.ALIGN_FIRST_TIP)}  # checkbox fields: label, hover text
+CHECK_BOX_SIZE = GRID - 8
 OPEN_POPUP_Z = 10  # stacking level of a node with an open dropdown, and of that dropdown's field
 
 
@@ -482,6 +502,37 @@ class ChoiceField(QComboBox):
         painter.end()
 
 
+class CheckField(QCheckBox):
+    """A checkbox node field, drawn to match the text boxes: a box with a Radix check in it, then the label, which
+    starts where other fields' captions do. Clicking anywhere on the row toggles it."""
+
+    _check: QIcon | None = None  # shared by every checkbox
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.setAttribute(Qt.WA_Hover)  # repaint the border on hover
+
+    def hitButton(self, pos) -> bool:
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event) -> None:
+        if CheckField._check is None:
+            CheckField._check = load_icon("check", CHECK_BOX_SIZE)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        box = QRect(0, (self.height() - CHECK_BOX_SIZE) // 2, CHECK_BOX_SIZE, CHECK_BOX_SIZE)
+        lit = self.underMouse() or self.hasFocus()
+        painter.setPen(QPen(QColor(FIELD_BORDER_ACTIVE if lit else FIELD_BORDER), 1))
+        painter.setBrush(QColor(FIELD_BACKGROUND))
+        painter.drawRoundedRect(QRectF(box).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+        if self.isChecked():
+            CheckField._check.paint(painter, box, Qt.AlignCenter)
+        painter.setPen(TEXT)
+        label = QRect(CHECK_BOX_SIZE + CAPTION_GAP, 0, self.width(), self.height())
+        painter.drawText(label, Qt.AlignLeft | Qt.AlignVCenter, self.text())
+        painter.end()
+
+
 class SignItem(QGraphicsItem):
     """The + / − switch on a connected input of a growing node: two halves side by side, the input's sign lit and
     the other greyed out. Clicking a half chooses it."""
@@ -491,9 +542,13 @@ class SignItem(QGraphicsItem):
         self.node_item = node_item
         self.index = index
         self.rect = QRectF(0, 0, 2 * SIGN_SIZE, SIGN_SIZE)
-        self.setPos(SIGN_LEFT, GRID * (node_item.first_port_row + index) + (GRID - SIGN_SIZE) / 2)
+        self.place()
         self.setAcceptHoverEvents(True)
         self._hovered: bool | None = None  # the half under the mouse: True for −, False for +, None for neither
+
+    def place(self) -> None:
+        """Put the switch in its input's row."""
+        self.setPos(SIGN_LEFT, GRID * (self.node_item.first_port_row + self.index) + (GRID - SIGN_SIZE) / 2)
 
     def subtracts(self) -> bool:
         return self.node_item.node.subtracts(self.index)
@@ -559,8 +614,6 @@ class NodeItem(ShiftSelects, QGraphicsItem):
     def __init__(self, node: Node, input_count: int, signs: int) -> None:
         super().__init__()
         self.node = node
-        # Rows, one grid cell each: title, then one per field, then the ports.
-        self.first_port_row = 1 + len(node.type.fields)
         self.rect = QRectF()
         self.setFlags(
             QGraphicsItem.ItemIsMovable
@@ -569,13 +622,33 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         )
         self.setPos(node.x, node.y)
         self.drop_target = False
-        self.fields: list[QGraphicsProxyWidget] = []  # top to bottom
-        for row, name in enumerate(node.type.fields, start=1):
-            self._add_field(row, name)
+        self.field_items: dict[str, QGraphicsProxyWidget] = {}  # every field, shown or not
+        for name in node.type.fields:
+            self._add_field(name)
+        self._place_fields()
         self.inputs: list[PortItem] = []
         self.signs: list[SignItem] = []  # one per connected input of a growing node
         self.outputs = [PortItem(self, True, i) for i in range(len(node.type.outputs))]
         self.set_inputs(input_count, signs)
+
+    def _place_fields(self) -> None:
+        """Rows, one grid cell each: title, then one per shown field, then the ports. The fields of an unchecked
+        checkbox are hidden."""
+        shown = self.node.shown_fields()
+        self.fields: list[QGraphicsProxyWidget] = []  # the shown ones, top to bottom
+        for name, proxy in self.field_items.items():
+            proxy.setVisible(name in shown)
+            if name in shown:
+                proxy.setPos(proxy.x(), GRID * (1 + shown.index(name)) + 2)
+                self.fields.append(proxy)
+        self.first_port_row = 1 + len(shown)
+
+    def update_layout(self) -> None:
+        """Show the fields that should be shown now, moving the ports below them and resizing the node."""
+        self._place_fields()
+        for item in [*self.inputs, *self.outputs, *self.signs]:
+            item.place()
+        self.set_inputs(len(self.inputs), len(self.signs))
 
     def set_inputs(self, count: int, signs: int) -> None:
         """Show `count` inputs (they change for growing nodes), and signs on the first `signs` of them."""
@@ -601,16 +674,18 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         else:
             item.setParentItem(None)
 
-    def _add_field(self, row: int, name: str) -> None:
+    def _add_field(self, name: str) -> None:
         if name == "name":
             widget = self._name_field()
         elif name in CHOICES:
             widget = self._choice_field(name)
+        elif name in TOGGLES:
+            widget = self._check_field(name)
         else:
             widget = self._file_field()
-        # Captioned fields sit to the right of their caption ("Name:").
+        # Captioned fields sit to the right of their caption ("Name:"). A checkbox starts where captions do.
         caption = FIELD_CAPTIONS.get(name)
-        left = self._box_left(caption) if caption else 6
+        left = self._box_left(caption) if caption else 8 if name in TOGGLES else 6
         widget.setStyleSheet(FIELD_STYLE)
         # Embedded widgets are drawn over their window background colour; without this, the square behind the
         # rounded corners shows as dark specks against the node body.
@@ -618,8 +693,8 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         widget.setFixedSize(NODE_WIDTH - left - 6, GRID - 4)
         proxy = QGraphicsProxyWidget(self)
         proxy.setWidget(widget)
-        proxy.setPos(left, GRID * row + 2)
-        self.fields.append(proxy)
+        proxy.setPos(left, 0)  # _place_fields puts it in its row
+        self.field_items[name] = proxy
 
     @staticmethod
     def _box_left(caption: str) -> int:
@@ -652,6 +727,14 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         field.currentIndexChanged.connect(
             lambda index: self.scene().set_value(self.node.id, name, field.itemData(index))
         )
+        return field
+
+    def _check_field(self, name: str) -> QWidget:
+        label, tip = TOGGLE_LABELS[name]
+        field = CheckField(label)
+        field.setToolTip(tip)
+        field.setChecked(self.node.is_on(name))
+        field.toggled.connect(lambda checked: self.scene().set_value(self.node.id, name, "" if checked else OFF))
         return field
 
     def _file_field(self) -> QWidget:
@@ -711,7 +794,7 @@ class NodeItem(ShiftSelects, QGraphicsItem):
 
         painter.setPen(TEXT)
         painter.drawText(title.adjusted(8, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, self.node.type.title)
-        for row, name in enumerate(self.node.type.fields, start=1):
+        for row, name in enumerate(self.node.shown_fields(), start=1):
             if name in FIELD_CAPTIONS:
                 caption = QRectF(8, GRID * row, NODE_WIDTH, GRID)
                 painter.drawText(caption, Qt.AlignLeft | Qt.AlignVCenter, FIELD_CAPTIONS[name])
@@ -981,6 +1064,10 @@ class EditorScene(QGraphicsScene):
 
     def set_value(self, node_id: int, name: str, value: str) -> None:
         self.graph.set_value(node_id, name, value)
+        if name in TOGGLES:  # it shows or hides other fields
+            self.node_items[node_id].update_layout()
+            self._update_wires(node_id)
+            self.nodes_changed.emit()
         self.edited.emit()
         if name != "name":  # typing a name is committed when the box is left
             self.commit()
@@ -995,10 +1082,14 @@ class EditorScene(QGraphicsScene):
     def node_moved(self, item: NodeItem) -> None:
         node_id = item.node.id
         self.graph.move_node(node_id, item.x(), item.y())
+        self._update_wires(node_id)
+        self.nodes_changed.emit()
+
+    def _update_wires(self, node_id: int) -> None:
+        """Redraw the wires to and from a node, after it moved or its ports did."""
         for wire in self.wire_items.values():
             if node_id in (wire.connection.src, wire.connection.dst):
                 wire.update_path()
-        self.nodes_changed.emit()
         self.edited.emit()
 
     def dragged_ports(self, port: PortItem) -> list[PortItem]:

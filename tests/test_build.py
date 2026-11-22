@@ -315,6 +315,73 @@ def test_unconnected_align_inputs_are_named(tmp_path):
     assert problems(g) == ["The reference input of Align has nothing connected to it."]
 
 
+def add_subtract(g: Graph, source: int | None, minus: int | None, align="") -> int:
+    node = g.add_node("subtract", 250, 0)
+    if source is not None:
+        g.connect(source, 0, node.id, 0)
+    if minus is not None:
+        g.connect(minus, 0, node.id, 1)
+    g.set_value(node.id, "align", align)
+    return node.id
+
+
+def noise(path, seed, frames=4410, data=None) -> str:
+    data = np.random.default_rng(seed).uniform(-0.25, 0.25, (frames, 2)) if data is None else data
+    soundfile.write(path, data.astype(np.float32), 44100, subtype="FLOAT")
+    return str(path)
+
+
+@pytest.mark.parametrize("alignment", ["", "cross_correlation"])
+def test_subtract_aligns_minus_and_matches_its_polarity_first(tmp_path, alignment):
+    out = tmp_path / "out"
+    out.mkdir()
+    vocals = soundfile.read(noise(tmp_path / "vocals.wav", 1), dtype="float64")[0]
+    instrumental = noise(tmp_path / "instrumental.wav", 2)
+    inst = soundfile.read(instrumental, dtype="float64")[0]
+    master = noise(tmp_path / "master.wav", 0, data=vocals + inst)
+    late = offset_copy(tmp_path / "late.wav", instrumental, 700, invert=True)
+    g = Graph()
+    node = add_subtract(g, add_input(g, "Master", master), add_input(g, "Instrumental", late))
+    g.set_value(node, "alignment", alignment)
+    add_output(g, "Vocals", node)
+    ok, labels, lines = run(make_plan(g), out)
+    assert ok and [label for _, label in labels] == [
+        "Loading master.wav", "Loading late.wav", "Aligning Instrumental to Master",
+        "Subtracting Instrumental from Master", "Writing Vocals.wav"]
+    assert (build.INFO, "Moved Instrumental earlier by 700 samples (15.873 ms).") in lines
+    assert (build.INFO, "Inverted Instrumental to match the polarity of Master.") in lines
+    result = read(out / "Vocals.wav")
+    assert np.allclose(result[:len(vocals)], vocals, atol=1e-6) and not result[len(vocals):].any()
+
+
+def test_subtract_without_aligning_pads_the_shorter_input(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    song, vocals = tone(tmp_path / "song.wav"), tone(tmp_path / "vocals.wav", frames=2205)
+    g = Graph()
+    add_output(g, "Out", add_subtract(g, add_input(g, "Song", song), add_input(g, "Vocals", vocals), align="off"))
+    plan = make_plan(g)
+    assert [s.label for s in plan.steps] == [
+        "Loading song.wav", "Loading vocals.wav", "Subtracting Vocals from Song", "Writing Out.wav"]
+    assert run(plan, out)[0]
+    expected = read(song).astype(np.float64)
+    expected[:2205] -= read(vocals)
+    assert np.array_equal(read(out / "Out.wav"), expected.astype(np.float32))
+
+
+def test_subtracted_outputs_are_named_like_a_mix(tmp_path):
+    g = Graph()
+    song = add_input(g, "Song", tone(tmp_path / "song.wav"))
+    add_output(g, "", add_subtract(g, song, add_input(g, "Instrumental", tone(tmp_path / "inst.wav"))))
+    assert list(build.output_names(g).values()) == ["Song − Instrumental"]
+
+
+def test_unconnected_subtract_inputs_are_named(tmp_path):
+    g = Graph()
+    add_output(g, "Out", add_subtract(g, add_input(g, "Song", tone(tmp_path / "song.wav")), None))
+    assert problems(g) == ["The minus input of Subtract has nothing connected to it."]
+
+
 def test_unconnected_invert_is_a_problem(tmp_path):
     g = Graph()
     add_output(g, "Out", add_invert(g, None))

@@ -13,6 +13,7 @@ from editor import (
     PLACEHOLDER_TEXT,
     PORT,
     TARGET_PORT,
+    CheckField,
     ChoiceField,
     EditorView,
     audio_files,
@@ -99,7 +100,7 @@ def test_canvas_menu_keeps_node_types_in_a_submenu(view):
     assert nodes.text() == "Add &Node" and add_inputs.text() == "Add &Inputs…"
     assert divider.isSeparator() and paste.text() == "&Paste"
     entries = [None if a.isSeparator() else a.data() for a in nodes.menu().actions()]
-    assert entries == ["input", "output", None, "align", "invert", "mix", "split_mid_side"]
+    assert entries == ["input", "output", None, "align", "invert", "mix", "split_mid_side", "subtract"]
 
 
 # --- Node fields ---
@@ -177,6 +178,31 @@ def test_invert_channels_is_a_dropdown_defaulting_to_both(view):
     assert field.currentIndex() == 0
     field.setCurrentIndex(2)
     assert graph.nodes[invert.id].values["channels"] == "right"
+
+
+def test_unchecking_align_first_hides_the_algorithm_and_moves_the_ports_up(view):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    subtract = graph.add_node("subtract", 240, 0)
+    graph.connect(song.id, 0, subtract.id, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    item = scene.node_items[subtract.id]
+    check, algorithm = item.fields
+    assert isinstance(check.widget(), CheckField) and check.widget().isChecked()
+    height, port_y = item.rect.height(), item.inputs[0].y()
+    wire = scene.wire_items[Connection(song.id, 0, subtract.id, 0)]
+
+    click(view, check.mapToScene(check.widget().rect().center()))  # on the label, not just the box
+    assert graph.nodes[subtract.id].values["align"] == "off" and not check.widget().isChecked()
+    assert item.fields == [check] and not algorithm.isVisible()
+    assert item.rect.height() == height - GRID and item.inputs[0].y() == port_y - GRID
+    assert wire.path().pointAtPercent(1) == wire.mapFromScene(item.inputs[0].scenePos())
+    assert scene.fields_in_order()[-1] is check  # Tab skips the hidden field
+
+    scene.undo()  # rebuilds the node as it was
+    item = scene.node_items[subtract.id]
+    assert len(item.fields) == 2 and item.rect.height() == height and item.fields[0].widget().isChecked()
 
 
 @pytest.mark.parametrize("key", NODE_TYPES)

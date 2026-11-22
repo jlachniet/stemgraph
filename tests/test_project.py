@@ -186,6 +186,16 @@ def test_align_choices_round_trip_and_defaults_are_not_saved():
     assert loaded.nodes[align.id].values == {"alignment": "cross_correlation", "polarity": "keep"}
 
 
+def test_subtract_align_first_round_trips_and_checked_is_not_saved():
+    graph = Graph()
+    subtract = graph.add_node("subtract", 0, 0)
+    graph.set_value(subtract.id, "align", "")
+    assert json.loads(dumps(graph, ViewState(), "."))["nodes"][0]["values"] == {}
+    graph.set_value(subtract.id, "align", "off")
+    loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
+    assert loaded.nodes[subtract.id].values == {"align": "off"}
+
+
 def test_rejects_unknown_alignment():
     node = {"id": 1, "type": "align", "x": 0, "y": 0, "values": {"alignment": "fancy"}}
     with pytest.raises(ProjectError):

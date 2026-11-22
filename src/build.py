@@ -123,6 +123,8 @@ def _derived_name(node: Node, output: int, sources: list[str]) -> str:
         return strings.SOURCE_ALIGNED.format(source=sources[0])
     if node.type_key == "mix":
         return _mix_name(node, sources)
+    if node.type_key == "subtract":  # worded like a Mix that subtracts its second input
+        return strings.MIX_SUBTRACTED.format(mix=sources[0], source=sources[1])
     return strings.SOURCE_OUTPUT.format(source=sources[0], port=node.type.outputs[output])
 
 
@@ -275,6 +277,12 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
         sources = [describe(c.src, c.src_output) for c in graph.sources(node_id)]
         return _derived_name(node, output, sources)
 
+    def add_align(source: tuple, reference: tuple, key: tuple, name: str, reference_name: str, phat: bool,
+                  match: bool) -> None:
+        steps.append(Step(strings.STEP_ALIGN.format(source=name, reference=reference_name),
+                          _align(source, reference, key, name, reference_name, phat, match),
+                          uses=(source, reference)))
+
     def require(node_id: int, output: int) -> tuple:
         """Add the steps that produce this node output, if not already there; return its store key."""
         node = graph.nodes[node_id]
@@ -320,9 +328,24 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
                 reference_name = describe(*feeds[(node_id, 1)])
                 phat = node.choice("alignment") != CROSS_CORRELATION
                 match = node.choice("polarity") != KEEP
-                steps.append(Step(strings.STEP_ALIGN.format(source=name, reference=reference_name),
-                                  _align(source, reference, key, name, reference_name, phat, match),
-                                  uses=(source, reference)))
+                add_align(source, reference, key, name, reference_name, phat, match)
+            return key
+        if node.type_key == "subtract":
+            key = ("node", node_id, 0)
+            if key not in done:
+                source = require(*feeds[(node_id, 0)])
+                minus = require(*feeds[(node_id, 1)])
+                done.add(key)
+                name = describe(*feeds[(node_id, 0)])
+                minus_name = describe(*feeds[(node_id, 1)])
+                if node.is_on("align"):
+                    # Subtracting an inverted copy would add it, so polarity is always matched.
+                    aligned = ("aligned", node_id)
+                    add_align(minus, source, aligned, minus_name, name, node.choice("alignment") != CROSS_CORRELATION,
+                              match=True)
+                    minus = aligned
+                steps.append(Step(strings.STEP_SUBTRACT.format(source=name, minus=minus_name),
+                                  _subtract(source, minus, key, name, minus_name), uses=(source, minus)))
             return key
         if node.type_key == "mix":
             key = ("node", node_id, 0)
@@ -408,6 +431,16 @@ def _mix(tracks: tuple, subtracted: list[bool], key: tuple, name: str):
             ctx.store[key] = audio.mix([ctx.store[track] for track in tracks], subtracted)
         except MemoryError:
             raise BuildError(strings.NO_MEMORY_MIX.format(sources=name)) from None
+        return []
+    return action
+
+
+def _subtract(source: tuple, minus: tuple, key: tuple, name: str, minus_name: str):
+    def action(ctx: Context) -> list:
+        try:
+            ctx.store[key] = audio.mix([ctx.store[source], ctx.store[minus]], [False, True])
+        except MemoryError:
+            raise BuildError(strings.NO_MEMORY_SUBTRACT.format(source=name, minus=minus_name)) from None
         return []
     return action
 
