@@ -72,6 +72,8 @@ ICON_SIZE = 15  # Radix Icons are drawn on a 15px grid; render them 1:1 so they 
 # Height of the corner controls, and width of their icon buttons. Odd on purpose: inside the 1px border
 # that leaves 27px, so icons whose ink is an odd number of pixels across (most of them) center exactly.
 CONTROL_SIZE = 29
+BUILD_SIZE = 37  # height of the Build button, bigger than the other corner controls; odd for the same reason
+BUILD_FONT_SCALE = 1.15  # the Build button's text, relative to the app font
 CONTROL_RADIUS = 5  # corner rounding of the corner controls (node text boxes use 3px)
 KEEP_VISIBLE = 2 * GRID  # screen px of the graph that panning always leaves on screen
 FIT_MARGIN = GRID  # screen px "Zoom to Fit" leaves between the nodes and the window edges
@@ -115,6 +117,7 @@ WIRE = QColor("#6e6e6e")         # gray-9
 TEXT = QColor("#eeeeec")         # sand-12
 PLACEHOLDER_TEXT = QColor("#b4b4b4")  # gray-11, low-contrast text
 PORT = QColor("#70b8ff")         # blue-11
+BUILD_ICON = QColor("#b4b4b4")   # gray-11, the Build button's play icon: a step softer than the text
 SELECTED = QColor("#eeeeee")     # gray-12
 FIELD_BACKGROUND = "#191919"     # gray-2
 FIELD_BORDER = "#3a3a3a"         # gray-6
@@ -161,7 +164,8 @@ QPushButton#segment_last {{ border-top-left-radius: 0; border-bottom-left-radius
 QPushButton#segment_first:hover, QPushButton#segment_middle:hover, QPushButton#segment_last:hover {{
     border-color: {FIELD_BORDER}; background: {HOVER_BACKGROUND};
 }}
-QPushButton#build {{ padding: 0 10px 0 6px; }}
+QPushButton#build {{ padding: 0 14px 0 10px; border-color: {NODE_BORDER.name()}; }}
+QPushButton#build:hover {{ border-color: {FIELD_BORDER_ACTIVE}; }}
 """
 
 # Menu bar and all menus (File menu, "add node" menu, text box menus). Applied app-wide in main.py.
@@ -206,16 +210,17 @@ def app_settings() -> QSettings:
     return QSettings(QSettings.IniFormat, QSettings.UserScope, "stemgraph", "stemgraph")
 
 
-def load_icon(name: str, box: int) -> QIcon:
-    """An icon from assets/icons on a `box`-sized canvas, recolored to the theme (the SVGs draw in currentColor).
+def load_icon(name: str, box: int, color: QColor = TEXT) -> QIcon:
+    """An icon from assets/icons on a `box`-sized canvas, in `color` (the SVGs draw in currentColor), or greyed
+    out when disabled.
 
     The glyph is drawn at its native ICON_SIZE so it stays crisp, then shifted by whole pixels so its
     visible ink (not its nominal 15px box, which some glyphs don't fill evenly) is centered on the canvas.
     """
     svg = (ICON_DIR / f"{name}.svg").read_text()
     icon = QIcon()
-    for mode, color in [(QIcon.Normal, TEXT.name()), (QIcon.Disabled, DISABLED_TEXT)]:
-        renderer = QSvgRenderer(QByteArray(svg.replace("currentColor", color).encode()))
+    for mode, ink in [(QIcon.Normal, color.name()), (QIcon.Disabled, DISABLED_TEXT)]:
+        renderer = QSvgRenderer(QByteArray(svg.replace("currentColor", ink).encode()))
         for scale in (1, 2):  # 2x for high-DPI screens
             glyph = QImage(ICON_SIZE * scale, ICON_SIZE * scale, QImage.Format_ARGB32_Premultiplied)
             glyph.fill(Qt.transparent)
@@ -943,11 +948,14 @@ def build_button(view: "EditorView") -> QPushButton:
     """The "▶ Build" button in the bottom-left corner of the canvas."""
     button = QPushButton(strings.BUILD_BUTTON, view)
     button.setObjectName("build")
-    box = CONTROL_SIZE - 2  # inside the 1px border
-    button.setIcon(load_icon("play", box))
+    font = button.font()
+    font.setPointSizeF(font.pointSizeF() * BUILD_FONT_SCALE)
+    button.setFont(font)
+    box = ICON_SIZE + 4  # a little room between the icon and the text
+    button.setIcon(load_icon("play-filled", box, BUILD_ICON))
     button.setIconSize(QSize(box, box))
     button.setToolTip(strings.BUILD_TIP)
-    button.setFixedHeight(CONTROL_SIZE)
+    button.setFixedHeight(BUILD_SIZE)
     button.setFocusPolicy(Qt.NoFocus)  # keep keyboard focus (e.g. Delete) on the canvas
     button.setStyleSheet(CONTROLS_STYLE)
     button.clicked.connect(view.build_requested)
