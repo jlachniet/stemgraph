@@ -16,7 +16,9 @@ NODE_OUTPUT = "Output"
 NODE_SPLIT_CENTER_SIDE = "Split Center/Side"
 NODE_INVERT = "Invert"
 NODE_MIX = "Mix"
+NODE_ALIGN = "Align"
 PORT_AUDIO = "audio"
+PORT_REFERENCE = "reference"
 PORT_CENTER = "center"
 PORT_SIDE = "side"
 NAME_CAPTION = "Name:"
@@ -34,6 +36,15 @@ CHANNELS_RIGHT = "Right"
 CHANNELS_BOTH_TIP = "Inverts both channels"
 CHANNELS_LEFT_TIP = "Inverts only the left channel"
 CHANNELS_RIGHT_TIP = "Inverts only the right channel"
+ALIGNMENT_GCC_PHAT = "GCC-PHAT"
+ALIGNMENT_CROSS_CORRELATION = "Correlation"  # "Cross-correlation" is too wide for the node
+ALIGNMENT_GCC_PHAT_TIP = "Handles mixing differences better"
+ALIGNMENT_CROSS_CORRELATION_TIP = "Simpler"
+POLARITY_CAPTION = "Polarity:"
+POLARITY_MATCH = "Match"
+POLARITY_KEEP = "Keep"
+POLARITY_MATCH_TIP = "Matches the polarity of the reference"
+POLARITY_KEEP_TIP = "Keeps the polarity as is"
 ADD_INPUT = "Add input"  # the empty input below a Mix's connected ones
 ADD_TIP = "Add this input"
 SUBTRACT_TIP = "Subtract this input"
@@ -118,7 +129,10 @@ THIRD_PARTY_SOFTWARE = [
     "{radix_icons}Radix Icons{end} and {radix_colors}Radix Colors{end}, MIT license",
 ]
 THIRD_PARTY_PAPERS = [
-    'Center-channel extraction from J. Paulus and M. Torcoli, "{paper}Geometrically-Motivated Primary-Ambient '
+    'Generalized correlation with the phase transform (PHAT) from C. Knapp and G. Carter, "{knapp_carter}The '
+    'generalized correlation method for estimation of time delay{end}," IEEE Transactions on Acoustics, Speech, '
+    "and Signal Processing, vol. 24, no. 4, pp. 320-327, Aug. 1976, doi: 10.1109/TASSP.1976.1162830.",
+    'Center-channel extraction from J. Paulus and M. Torcoli, "{paulus_torcoli}Geometrically-Motivated Primary-Ambient '
     'Decomposition With Center-Channel Extraction{end}," 2022 30th European Signal Processing Conference '
     "(EUSIPCO), Belgrade, Serbia, 2022, pp. 299-303, doi: 10.23919/EUSIPCO55093.2022.9909879.",
 ]
@@ -164,6 +178,7 @@ PROBLEM_ITEM = "• {problem}"
 NOTHING_TO_BUILD = "No output nodes are present"
 OUTPUT_NOT_CONNECTED = 'Output "{output}" has nothing connected to it.'
 NODE_NOT_CONNECTED = "A {node} node has nothing connected to its input."
+NODE_INPUT_NOT_CONNECTED = "The {port} input of {node} has nothing connected to it."  # for nodes with several
 NODE_NOTHING_CONNECTED = "A {node} node has nothing connected to it."  # for nodes whose inputs grow
 INPUT_NO_FILE = 'Input "{input}" has no file chosen.'
 INPUT_PROBLEM = 'Input "{input}": {problem}'
@@ -192,9 +207,11 @@ STEP_RESAMPLE = "Resampling {file} from {rate} Hz to {target} Hz"
 STEP_SPLIT = "Splitting {source} into center and side"
 STEP_INVERT = "Inverting {source}"
 STEP_MIX = "Mixing {sources}"
+STEP_ALIGN = "Aligning {source} to {reference}"
 STEP_WRITE = "Writing {file}"
 SOURCE_OUTPUT = "{source} {port}"  # a split's output, as a source: "Song center"
 SOURCE_INVERTED = "{source} inverted"  # an Invert's output, as a source: "Song inverted"
+SOURCE_ALIGNED = "{source} aligned"  # an Align's output, as a source: "Vocals aligned"
 # A Mix's output, as a source, built up from its sources: "Drums + Bass", "Song − Instrumental", "−Vocals",
 # and past MIX_NAMED_SOURCES of them, "Drums + Bass + 4 more".
 MIX_FIRST_ADDED = "{source}"
@@ -205,6 +222,14 @@ MIX_MORE = "{mix} + {count} more"
 
 LOG_MONO = "{file} is mono; using it on both channels."
 LOG_PEAK = "{file} peaks at +{db:.1f} dBFS."
+LOG_ALIGN_LATER = "Moved {source} later by {samples} ({ms:.3f} ms)."
+LOG_ALIGN_EARLIER = "Moved {source} earlier by {samples} ({ms:.3f} ms)."
+LOG_ALIGN_ALREADY = "{source} already lines up with {reference}."
+LOG_ALIGN_ONE_SAMPLE = "1 sample"
+LOG_ALIGN_SAMPLES = "{count} samples"
+LOG_ALIGN_INVERTED = "Inverted {source} to match the polarity of {reference}."
+LOG_ALIGN_OPPOSITE = "{source} has the opposite polarity to {reference}; left as it is."
+LOG_ALIGN_NOTHING_IN_COMMON = "{source} has nothing in common with {reference}, so it was left as it is."
 LOG_CANCELLED = "Cancelled. No files were written."
 LOG_DONE_ONE = "Done. Wrote 1 file to {folder}."
 LOG_DONE_MANY = "Done. Wrote {count} files to {folder}."
@@ -215,4 +240,5 @@ NO_MEMORY_RESAMPLE = "There isn't enough memory to resample {file}."
 NO_MEMORY_SPLIT = "There isn't enough memory to split {source}."
 NO_MEMORY_INVERT = "There isn't enough memory to invert {source}."
 NO_MEMORY_MIX = "There isn't enough memory to mix {sources}."
+NO_MEMORY_ALIGN = "There isn't enough memory to align {source}."
 NO_MEMORY_BUILD = "There isn't enough memory to finish the build."

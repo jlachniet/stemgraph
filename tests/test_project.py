@@ -176,6 +176,22 @@ def test_invert_channels_round_trip_and_both_is_not_saved():
     assert loaded.nodes[invert.id].values["channels"] == "left"
 
 
+def test_align_choices_round_trip_and_defaults_are_not_saved():
+    graph = Graph()
+    align = graph.add_node("align", 0, 0)
+    assert json.loads(dumps(graph, ViewState(), "."))["nodes"][0]["values"] == {}
+    graph.set_value(align.id, "alignment", "cross_correlation")
+    graph.set_value(align.id, "polarity", "keep")
+    loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
+    assert loaded.nodes[align.id].values == {"alignment": "cross_correlation", "polarity": "keep"}
+
+
+def test_rejects_unknown_alignment():
+    node = {"id": 1, "type": "align", "x": 0, "y": 0, "values": {"alignment": "fancy"}}
+    with pytest.raises(ProjectError):
+        loads(project_text(nodes=[node]), ".")
+
+
 def test_mix_with_signs_round_trips():
     graph = Graph()
     sources = [graph.add_node("input", 0, 96 * i) for i in range(3)]

@@ -175,6 +175,118 @@ def test_split_can_be_cancelled():
         audio.split_paulus_torcoli(np.zeros((1000, 2)), cancelled=lambda: True)
 
 
+# --- Alignment ---
+
+
+def placed(x: np.ndarray, lag: int, frames: int) -> np.ndarray:
+    """`x` moved `lag` frames later in a track of `frames` frames, cut to fit."""
+    y = np.zeros((frames, x.shape[1]))
+    for n in range(max(lag, 0), min(frames, len(x) + lag)):
+        y[n] = x[n - lag]
+    return y
+
+
+def brute_force_correlation(x: np.ndarray, reference: np.ndarray) -> dict[int, float]:
+    """r[D] = Σ_c Σ_n reference_c[n]·x_c[n − D] for every lag with overlap, summed directly."""
+    return {
+        lag: sum(reference[n] @ x[n - lag] for n in range(len(reference)) if 0 <= n - lag < len(x))
+        for lag in range(-(len(x) - 1), len(reference))
+    }
+
+
+@pytest.mark.parametrize("phat", [True, False])
+@pytest.mark.parametrize("lag", [0, 1234, -987])
+def test_find_offset_recovers_the_lag(phat, lag):
+    x = np.random.default_rng(20).uniform(-1, 1, (8000, 2))
+    reference = placed(x, lag, 9000)
+    assert audio.find_offset(x, reference, phat) == (lag, 1)
+    assert audio.find_offset(x, -reference, phat) == (lag, -1)
+
+
+@pytest.mark.parametrize("phat", [True, False])
+@pytest.mark.parametrize("frames, reference_frames", [(5, 9), (9, 5), (1, 7), (7, 1), (1, 1)])
+def test_find_offset_reaches_both_extreme_lags(phat, frames, reference_frames):
+    x, reference = np.zeros((frames, 2)), np.zeros((reference_frames, 2))
+    x[0], reference[-1] = 1, 1  # they overlap only at the latest lag
+    assert audio.find_offset(x, reference, phat) == (reference_frames - 1, 1)
+    x[:], reference[:] = 0, 0
+    x[-1], reference[0] = 1, 1  # and only at the earliest
+    assert audio.find_offset(x, reference, phat) == (-(frames - 1), 1)
+
+
+@pytest.mark.parametrize("frames, reference_frames", [(13, 29), (29, 13), (16, 16)])
+def test_cross_correlation_finds_the_brute_force_peak(frames, reference_frames):
+    rng = np.random.default_rng(frames * reference_frames)
+    for _ in range(20):
+        x, reference = rng.normal(size=(frames, 2)), rng.normal(size=(reference_frames, 2))
+        r = brute_force_correlation(x, reference)
+        lag = max(r, key=lambda d: abs(r[d]))
+        assert audio.find_offset(x, reference, phat=False) == (lag, 1 if r[lag] > 0 else -1)
+
+
+def test_gcc_phat_matches_the_definition(monkeypatch):
+    rng = np.random.default_rng(21)
+    x, reference = rng.normal(size=(13, 2)), rng.normal(size=(29, 2))
+    size = len(x) + len(reference) - 1
+    k = np.arange(size)
+    dft = np.exp(-2j * np.pi * np.outer(k, k) / size)  # the DFT matrix, written out
+    padded_x, padded_reference = placed(x, 0, size), placed(reference, 0, size)
+    spectrum = sum((dft @ padded_reference[:, c]) * np.conj(dft @ padded_x[:, c]) for c in range(2))
+    expected = (np.conj(dft) @ (spectrum / np.abs(spectrum))).real / size
+
+    seen = []
+    irfft = np.fft.irfft
+    monkeypatch.setattr(np.fft, "irfft", lambda *args: seen.append(irfft(*args)) or seen[-1])
+    lag, _ = audio.find_offset(x, reference, phat=True)
+    assert np.allclose(seen[0], expected, rtol=0, atol=1e-12)
+    lags = [d if d < len(reference) else d - size for d in range(size)]
+    assert lag == lags[int(np.argmax(np.abs(expected)))]
+
+
+@pytest.mark.parametrize("phat", [True, False])
+def test_shared_lag_uses_both_channels(phat):
+    rng = np.random.default_rng(22)
+    x = np.column_stack((rng.uniform(-1, 1, 8000), np.zeros(8000)))
+    reference = placed(x[:, ::-1], 300, 9000)  # left of x in the right of the reference: nothing in common
+    assert audio.find_offset(x, reference, phat) == (0, 0)
+    side = np.column_stack((x[:, 0], -x[:, 0]))  # out of phase, which a mono downmix couldn't see
+    assert audio.find_offset(side, placed(side, 300, 9000), phat) == (300, 1)
+
+
+def test_exact_ties_go_to_the_smallest_then_the_positive_lag():
+    one = np.ones((1, 2))
+    assert audio.find_offset(one, np.ones((2, 2)), phat=False) == (0, 1)  # lags 0 and 1 tie
+    x = np.array([[1.0, 1.0], [0.0, 0.0], [1.0, 1.0]])
+    assert audio.find_offset(x, np.array([[0.0, 0.0], [1.0, 1.0]]), phat=False) == (1, 1)  # lags −1 and 1 tie
+
+
+@pytest.mark.parametrize("phat", [True, False])
+def test_nothing_in_common_gives_no_lag(phat):
+    noise = np.random.default_rng(23).uniform(-1, 1, (1000, 2))
+    assert audio.find_offset(noise, np.zeros((500, 2)), phat) == (0, 0)
+    assert audio.find_offset(np.zeros((500, 2)), noise, phat) == (0, 0)
+    side = np.column_stack((noise[:, 0], -noise[:, 0]))
+    mono = np.repeat(noise[:, 1:], 2, axis=1)  # a mono file, read onto both channels
+    assert audio.find_offset(side, mono, phat) == (0, 0)
+
+
+@pytest.mark.parametrize("phat", [True, False])
+def test_find_offset_can_be_cancelled(phat):
+    with pytest.raises(audio.Cancelled):
+        audio.find_offset(np.ones((100, 2)), np.ones((100, 2)), phat, cancelled=lambda: True)
+
+
+def test_shift_moves_audio_without_changing_it():
+    x = np.random.default_rng(24).uniform(-1, 1, (100, 2))
+    later = audio.shift(x, 30)
+    assert len(later) == 130 and not later[:30].any() and np.array_equal(later[30:], x)
+    earlier = audio.shift(x, -30)
+    assert np.array_equal(earlier, x[30:])
+    assert np.array_equal(audio.shift(x, -99), x[99:])
+    unchanged = audio.shift(x, 0)
+    assert np.array_equal(unchanged, x) and unchanged is not x
+
+
 # --- Reading ---
 
 

@@ -1,4 +1,4 @@
-"""Audio processing: reading files, exact resampling, the mid/side splits and writing WAVs. No Qt.
+"""Audio processing: reading files, exact resampling, the mid/side splits, alignment and writing WAVs. No Qt.
 
 Audio is handled as float64 arrays of shape (frames, 2) at RATE. It is rounded to float32 only once, when written.
 """
@@ -316,6 +316,69 @@ def split_paulus_torcoli(x: np.ndarray, cancelled: Callable[[], bool] | None = N
     center = (x[:, 0] + x[:, 1]) / 2 - residual.reshape(-1)[HOP:HOP + frames]
     mid = np.column_stack((center, center))
     return mid, x - mid
+
+
+def find_offset(x: np.ndarray, reference: np.ndarray, phat: bool,
+                cancelled: Callable[[], bool] | None = None) -> tuple[int, int]:
+    """(lag, sign): how many frames later `x` must be moved to line up with `reference`, and the sign of the
+    correlation there. A negative lag means earlier. A sign of −1 means `x` is inverted relative to the reference;
+    0 means they have nothing in common (the lag is then 0).
+
+    Every lag with any overlap is searched, D = −(len(x) − 1) … len(reference) − 1, and the one with the largest
+    |r[D]| wins. Both channels share the lag, so their correlations are summed. With a = x and b = reference:
+
+        r[D] = Σ_c Σ_n b_c[n]·a_c[n − D]    computed as the inverse DFT of G[k] = Σ_c B_c[k]·conj(A_c[k])
+
+    Without `phat` this is plain cross-correlation. Counting audio outside the files as silence, shifting a doesn't
+    change its energy, so the largest |r[D]| is exactly the least-squares fit of b ≈ g·a[n − D] over every lag D
+    and gain g (of either sign). Any DFT length N ≥ len(a) + len(b) − 1 gives the same values, up to rounding,
+    with no wrap-around; the next fast length is used.
+
+    With `phat` it is GCC-PHAT, the generalized correlation method with the phase transform weighting of Knapp &
+    Carter (IEEE Trans. ASSP, 1976): G[k] is replaced by G[k]/|G[k]| (0 where G[k] is exactly 0), so every
+    frequency counts equally. Unlike plain correlation, the result depends on N. By convention it is
+    N = len(a) + len(b) − 1 exactly: the smallest DFT that holds G without loss, where every index is a real lag.
+    Near-silent frequencies get full weight too, which makes PHAT noisy where the inputs barely share any content.
+
+    Only indices that are real lags are searched. Exact ties go to the smallest |D|, then to the positive one.
+    If G is exactly 0 everywhere (either input silent, or stereo that cancels exactly, like (S, −S) against a
+    mono reference), the result is (0, 0).
+
+    Raises Cancelled if `cancelled` returns True while it runs.
+    """
+    frames, reference_frames = len(x), len(reference)
+    full = frames + reference_frames - 1
+    size = full if phat else _fast_length(full)
+    spectrum = np.zeros(size // 2 + 1, dtype=np.complex128)
+    for channel in range(CHANNELS):  # one channel at a time, which bounds the memory the spectra take
+        if cancelled and cancelled():
+            raise Cancelled
+        spectrum += np.fft.rfft(reference[:, channel], size) * np.conj(np.fft.rfft(x[:, channel], size))
+    if not spectrum.any():
+        return 0, 0
+    if phat:
+        magnitude = np.abs(spectrum)
+        spectrum = np.divide(spectrum, magnitude, out=np.zeros_like(spectrum), where=magnitude > 0)
+    if cancelled and cancelled():
+        raise Cancelled
+    r = np.fft.irfft(spectrum, size)
+    # Index D holds lag D ≥ 0 and index size + D lag D < 0; any indices in between come from padding.
+    lags = np.concatenate((np.arange(reference_frames), np.arange(-(frames - 1), 0)))
+    values = np.concatenate((r[:reference_frames], r[size - frames + 1:]))
+    magnitudes = np.abs(values)
+    peak = magnitudes.max()
+    if peak == 0:
+        return 0, 0
+    best = min(np.flatnonzero(magnitudes == peak), key=lambda i: (abs(lags[i]), -lags[i]))
+    return int(lags[best]), 1 if values[best] > 0 else -1
+
+
+def shift(x: np.ndarray, lag: int) -> np.ndarray:
+    """`x` moved `lag` frames later (earlier if negative): silence is added at the start, or the frames that would
+    come before the start are dropped. Nothing else changes."""
+    if lag >= 0:
+        return np.concatenate((np.zeros((lag, x.shape[1])), x))
+    return x[-lag:].copy()
 
 
 def peak_dbfs(samples: np.ndarray) -> float:

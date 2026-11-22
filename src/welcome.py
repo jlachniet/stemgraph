@@ -52,7 +52,8 @@ THIRD_PARTY_URLS = {
     "qt": "https://doc.qt.io/qtforpython-6/",
     "radix_icons": "https://github.com/radix-ui/icons",
     "radix_colors": "https://www.radix-ui.com/colors",
-    "paper": "https://arxiv.org/abs/2206.02125",
+    "knapp_carter": "https://doi.org/10.1109/TASSP.1976.1162830",
+    "paulus_torcoli": "https://arxiv.org/abs/2206.02125",
 }
 
 PANEL_MARGIN = 24

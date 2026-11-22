@@ -34,6 +34,10 @@ MID_SIDE = "mid_side"
 BOTH = ""
 LEFT = "left"
 RIGHT = "right"
+GCC_PHAT = "gcc_phat"
+CROSS_CORRELATION = "cross_correlation"
+MATCH = ""
+KEEP = "keep"
 CHOICES = {
     "algorithm": (
         (AUTO, strings.ALGORITHM_AUTO, ""),
@@ -45,8 +49,17 @@ CHOICES = {
         (LEFT, strings.CHANNELS_LEFT, strings.CHANNELS_LEFT_TIP),
         (RIGHT, strings.CHANNELS_RIGHT, strings.CHANNELS_RIGHT_TIP),
     ),
+    "alignment": (
+        (AUTO, strings.ALGORITHM_AUTO, ""),
+        (GCC_PHAT, strings.ALIGNMENT_GCC_PHAT, strings.ALIGNMENT_GCC_PHAT_TIP),
+        (CROSS_CORRELATION, strings.ALIGNMENT_CROSS_CORRELATION, strings.ALIGNMENT_CROSS_CORRELATION_TIP),
+    ),
+    "polarity": (
+        (MATCH, strings.POLARITY_MATCH, strings.POLARITY_MATCH_TIP),
+        (KEEP, strings.POLARITY_KEEP, strings.POLARITY_KEEP_TIP),
+    ),
 }
-AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI}
+AUTO_CHOICE = {"algorithm": PAULUS_TORCOLI, "alignment": GCC_PHAT}
 
 # A growing node's signs value: one character per connected input, top to bottom, "-" for subtracted and "+" for
 # added. Inputs past the end are added, and trailing "+" are dropped, so a node with every input added saves the
@@ -55,6 +68,10 @@ SIGNS = "signs"
 
 NODE_TYPES = {
     "input": NodeType(strings.NODE_INPUT, (), (strings.PORT_AUDIO,), fields=("name", "file")),
+    "align": NodeType(
+        strings.NODE_ALIGN, (strings.PORT_AUDIO, strings.PORT_REFERENCE), (strings.PORT_AUDIO,),
+        fields=("alignment", "polarity"),
+    ),
     "split_mid_side": NodeType(
         strings.NODE_SPLIT_CENTER_SIDE, (strings.PORT_AUDIO,), (strings.PORT_CENTER, strings.PORT_SIDE),
         fields=("algorithm",),

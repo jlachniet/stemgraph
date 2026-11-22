@@ -229,6 +229,92 @@ def test_inverted_outputs_are_named_after_their_source(tmp_path):
     assert list(build.output_names(g).values()) == ["Song inverted", "Song center inverted", "Invert inverted"]
 
 
+def add_align(g: Graph, source: int | None, reference: int | None) -> int:
+    node = g.add_node("align", 250, 0)
+    if source is not None:
+        g.connect(source, 0, node.id, 0)
+    if reference is not None:
+        g.connect(reference, 0, node.id, 1)
+    return node.id
+
+
+def offset_copy(path, source, lag, frames=6000, invert=False) -> str:
+    """A file holding `source` moved `lag` frames later (cut to fit), maybe inverted."""
+    x = soundfile.read(source, dtype="float32")[0]
+    y = np.zeros((frames, 2), dtype=np.float32)
+    start, stop = max(lag, 0), min(frames, len(x) + lag)
+    y[start:stop] = x[start - lag:stop - lag]
+    soundfile.write(path, -y if invert else y, 44100, subtype="FLOAT")
+    return str(path)
+
+
+@pytest.mark.parametrize("alignment", ["", "gcc_phat", "cross_correlation"])
+@pytest.mark.parametrize("lag", [700, -300])
+def test_build_aligns_audio_to_the_reference(tmp_path, alignment, lag):
+    out = tmp_path / "out"
+    out.mkdir()
+    stem = tone(tmp_path / "stem.wav")
+    g = Graph()
+    node = add_align(g, add_input(g, "Stem", stem), add_input(g, "Mix", offset_copy(tmp_path / "mix.wav", stem, lag)))
+    g.set_value(node, "alignment", alignment)
+    add_output(g, "Aligned", node)
+    ok, labels, lines = run(make_plan(g), out)
+    assert ok and [label for _, label in labels] == [
+        "Loading stem.wav", "Loading mix.wav", "Aligning Stem to Mix", "Writing Aligned.wav"]
+    x = soundfile.read(stem, dtype="float64")[0]
+    assert np.array_equal(read(out / "Aligned.wav"), audio.shift(x, lag).astype(np.float32))
+    moved = "later" if lag > 0 else "earlier"
+    ms = abs(lag) * 1000 / 44100
+    assert (build.INFO, f"Moved Stem {moved} by {abs(lag)} samples ({ms:.3f} ms).") in lines
+
+
+@pytest.mark.parametrize("polarity, inverted", [("", True), ("keep", False)])
+def test_align_matches_polarity_unless_told_to_keep_it(tmp_path, polarity, inverted):
+    out = tmp_path / "out"
+    out.mkdir()
+    stem = tone(tmp_path / "stem.wav")
+    g = Graph()
+    mix = add_input(g, "Mix", offset_copy(tmp_path / "mix.wav", stem, 1, invert=True))
+    node = add_align(g, add_input(g, "Stem", stem), mix)
+    g.set_value(node, "polarity", polarity)
+    add_output(g, "Aligned", node)
+    ok, _, lines = run(make_plan(g), out)
+    assert ok
+    expected = audio.shift(soundfile.read(stem, dtype="float64")[0], 1)
+    assert np.array_equal(read(out / "Aligned.wav"), (-expected if inverted else expected).astype(np.float32))
+    assert (build.INFO, "Moved Stem later by 1 sample (0.023 ms).") in lines
+    if inverted:
+        assert (build.INFO, "Inverted Stem to match the polarity of Mix.") in lines
+    else:
+        assert (build.INFO, "Stem has the opposite polarity to Mix; left as it is.") in lines
+
+
+def test_align_with_nothing_in_common_leaves_the_audio_alone(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    stem = tone(tmp_path / "stem.wav")
+    silence = tmp_path / "silence.wav"
+    soundfile.write(silence, np.zeros((1000, 2), dtype=np.float32), 44100, subtype="FLOAT")
+    g = Graph()
+    add_output(g, "Aligned", add_align(g, add_input(g, "Stem", stem), add_input(g, "Silence", str(silence))))
+    ok, _, lines = run(make_plan(g), out)
+    assert ok and np.array_equal(read(out / "Aligned.wav"), soundfile.read(stem, dtype="float32")[0])
+    assert (build.WARNING, "Stem has nothing in common with Silence, so it was left as it is.") in lines
+
+
+def test_aligned_outputs_are_named_after_their_audio(tmp_path):
+    g = Graph()
+    stem = add_input(g, "Vocals", tone(tmp_path / "vocals.wav"))
+    add_output(g, "", add_align(g, stem, add_input(g, "Song", tone(tmp_path / "song.wav"))))
+    assert list(build.output_names(g).values()) == ["Vocals aligned"]
+
+
+def test_unconnected_align_inputs_are_named(tmp_path):
+    g = Graph()
+    add_output(g, "Out", add_align(g, add_input(g, "Stem", tone(tmp_path / "stem.wav")), None))
+    assert problems(g) == ["The reference input of Align has nothing connected to it."]
+
+
 def test_unconnected_invert_is_a_problem(tmp_path):
     g = Graph()
     add_output(g, "Out", add_invert(g, None))

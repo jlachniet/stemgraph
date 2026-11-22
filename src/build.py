@@ -15,7 +15,7 @@ from pathlib import Path
 
 import audio
 import strings
-from graph import LEFT, MID_SIDE, RIGHT, Graph, Node
+from graph import CROSS_CORRELATION, KEEP, LEFT, MID_SIDE, RIGHT, Graph, Node
 
 MIX_NAMED_SOURCES = 3  # a Mix of more sources than this is named after the first two: "Drums + Bass + 4 more"
 EXPORT_EXTENSION = ".wav"
@@ -119,6 +119,8 @@ def _derived_name(node: Node, output: int, sources: list[str]) -> str:
     "Song inverted", "Song − Instrumental"."""
     if node.type_key == "invert":
         return strings.SOURCE_INVERTED.format(source=sources[0])
+    if node.type_key == "align":
+        return strings.SOURCE_ALIGNED.format(source=sources[0])
     if node.type_key == "mix":
         return _mix_name(node, sources)
     return strings.SOURCE_OUTPUT.format(source=sources[0], port=node.type.outputs[output])
@@ -210,6 +212,9 @@ def make_plan(graph: Graph) -> Plan:
             if (node.id, index) not in feeds:
                 if node.type_key == "output":
                     problems.append(strings.OUTPUT_NOT_CONNECTED.format(output=names[node.id].strip()))
+                elif len(node.type.inputs) > 1:
+                    problems.append(strings.NODE_INPUT_NOT_CONNECTED.format(
+                        node=node.type.title, port=node.type.inputs[index]))
                 else:
                     problems.append(strings.NODE_NOT_CONNECTED.format(node=node.type.title))
 
@@ -305,6 +310,20 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
                 steps.append(Step(strings.STEP_INVERT.format(source=name), _invert(source, key, name, channels),
                                   uses=(source,)))
             return key
+        if node.type_key == "align":
+            key = ("node", node_id, 0)
+            if key not in done:
+                source = require(*feeds[(node_id, 0)])
+                reference = require(*feeds[(node_id, 1)])
+                done.add(key)
+                name = describe(*feeds[(node_id, 0)])
+                reference_name = describe(*feeds[(node_id, 1)])
+                phat = node.choice("alignment") != CROSS_CORRELATION
+                match = node.choice("polarity") != KEEP
+                steps.append(Step(strings.STEP_ALIGN.format(source=name, reference=reference_name),
+                                  _align(source, reference, key, name, reference_name, phat, match),
+                                  uses=(source, reference)))
+            return key
         if node.type_key == "mix":
             key = ("node", node_id, 0)
             if key not in done:
@@ -390,6 +409,32 @@ def _mix(tracks: tuple, subtracted: list[bool], key: tuple, name: str):
         except MemoryError:
             raise BuildError(strings.NO_MEMORY_MIX.format(sources=name)) from None
         return []
+    return action
+
+
+def _align(source: tuple, reference: tuple, key: tuple, name: str, reference_name: str, phat: bool, match: bool):
+    def action(ctx: Context) -> list:
+        try:
+            lag, sign = audio.find_offset(ctx.store[source], ctx.store[reference], phat, ctx.cancelled)
+            y = audio.shift(ctx.store[source], lag)
+            if match and sign < 0:
+                y *= -1
+        except MemoryError:
+            raise BuildError(strings.NO_MEMORY_ALIGN.format(source=name)) from None
+        ctx.store[key] = y
+        if sign == 0:
+            return [(WARNING, strings.LOG_ALIGN_NOTHING_IN_COMMON.format(source=name, reference=reference_name))]
+        if lag == 0:
+            lines = [(INFO, strings.LOG_ALIGN_ALREADY.format(source=name, reference=reference_name))]
+        else:
+            count = abs(lag)
+            samples = strings.LOG_ALIGN_ONE_SAMPLE if count == 1 else strings.LOG_ALIGN_SAMPLES.format(count=count)
+            moved = strings.LOG_ALIGN_LATER if lag > 0 else strings.LOG_ALIGN_EARLIER
+            lines = [(INFO, moved.format(source=name, samples=samples, ms=count * 1000 / audio.RATE))]
+        if sign < 0:
+            text = strings.LOG_ALIGN_INVERTED if match else strings.LOG_ALIGN_OPPOSITE
+            lines.append((INFO, text.format(source=name, reference=reference_name)))
+        return lines
     return action
 
 

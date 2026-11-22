@@ -130,6 +130,21 @@ def test_auto_resolves_to_its_current_choice():
     assert split.choice("algorithm") == "mid_side"
 
 
+def test_align_has_audio_and_reference_inputs_and_two_choices():
+    graph = Graph()
+    align = graph.add_node("align", 0, 0)
+    assert align.type.inputs == ("audio", "reference") and align.type.outputs == ("audio",)
+    assert align.choice("alignment") == "gcc_phat"  # Auto
+    assert align.choice("polarity") == ""  # Match: a plain choice, not Auto
+    graph.set_value(align.id, "alignment", "cross_correlation")
+    assert align.choice("alignment") == "cross_correlation"
+    graph.set_value(align.id, "polarity", "keep")
+    with pytest.raises(ValueError):
+        graph.set_value(align.id, "alignment", "mid_side")  # the split's choices aren't the align's
+    with pytest.raises(ValueError):
+        graph.set_value(align.id, "polarity", "flip")
+
+
 # --- Undo state ---
 
 

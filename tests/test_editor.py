@@ -99,7 +99,7 @@ def test_canvas_menu_keeps_node_types_in_a_submenu(view):
     assert nodes.text() == "Add &Node" and add_inputs.text() == "Add &Inputs…"
     assert divider.isSeparator() and paste.text() == "&Paste"
     entries = [None if a.isSeparator() else a.data() for a in nodes.menu().actions()]
-    assert entries == ["input", "output", None, "invert", "mix", "split_mid_side"]
+    assert entries == ["input", "output", None, "align", "invert", "mix", "split_mid_side"]
 
 
 # --- Node fields ---

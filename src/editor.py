@@ -114,7 +114,7 @@ BAND_SCROLL_INTERVAL = 16  # ms between selection-box scrolling ticks
 # group sorted alphabetically by node title (what the menu shows), not by type key, when adding a node type.
 MENU_GROUPS = [
     ["input", "output"],
-    ["invert", "mix", "split_mid_side"],
+    ["align", "invert", "mix", "split_mid_side"],
 ]
 
 # Radix Colors dark scales (see docs/design.md)
@@ -432,6 +432,8 @@ FIELD_CAPTIONS = {
     "name": strings.NAME_CAPTION,
     "algorithm": strings.ALGORITHM_CAPTION,
     "channels": strings.CHANNELS_CAPTION,
+    "alignment": strings.ALGORITHM_CAPTION,
+    "polarity": strings.POLARITY_CAPTION,
 }
 OPEN_POPUP_Z = 10  # stacking level of a node with an open dropdown, and of that dropdown's field
 
