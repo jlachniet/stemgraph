@@ -572,3 +572,62 @@ def test_dialog_text_is_never_treated_as_html(qapp):
     answer_next_dialog(qapp, inspect)
     message(None, "Couldn't open <b>mix</b>.sgp.", QDialogButtonBox.Ok, QDialogButtonBox.Ok)
     assert seen["format"] == Qt.PlainText
+
+
+# --- Adding files ---
+
+
+def audio(tmp_path, *names) -> list[str]:
+    for name in names:
+        (tmp_path / name).write_bytes(b"")
+    return [str(tmp_path / name) for name in names]
+
+
+def inputs(w: MainWindow) -> list:
+    return [n for n in w.view.scene().graph.nodes.values() if n.type_key == "input"]
+
+
+def test_added_files_become_inputs_where_dropped(win, tmp_path):
+    paths = audio(tmp_path, "a.wav", "b.wav")
+    win.add_files(paths, QPointF(240, 48), None)
+    assert sorted((n.x, n.y, n.values["file"]) for n in inputs(win))[0] == (240, 48, paths[0])
+    assert len(inputs(win)) == 2
+
+
+def test_added_files_without_a_place_go_in_the_middle_of_the_canvas(win, tmp_path):
+    win.add_files(audio(tmp_path, "a.wav"), None, None)
+    (node,) = inputs(win)
+    middle = win.view.mapToScene(win.view.viewport().rect().center())
+    assert abs(node.x - middle.x()) <= 12 and abs(node.y - middle.y()) <= 12
+
+
+def test_a_single_file_dropped_on_an_input_becomes_its_file(win, tmp_path):
+    add_node(win, "input")
+    (song,) = inputs(win)
+    (path,) = audio(tmp_path, "Song.wav")
+    win.add_files([path], QPointF(0, 0), song.id)
+    assert inputs(win) == [song] and song.values["file"] == path
+
+
+def test_nothing_usable_says_so(win, tmp_path, errors):
+    (tmp_path / "notes.txt").write_text("hi")
+    win.add_files([str(tmp_path / "notes.txt"), str(tmp_path)], None, None)
+    assert errors == ["No audio files to add."] and not inputs(win)
+
+
+def test_a_dropped_project_is_opened_instead(win, tmp_path, prompts):
+    add_node(win)
+    prompts.answers = [DISCARD]
+    project = saved_project(tmp_path, "b.sgp", nodes=2)
+    saved_project(tmp_path, "a.sgp", nodes=3)
+    win.add_files([str(tmp_path / "a.sgp"), project, *audio(tmp_path, "x.wav")], None, None)
+    assert win.path == str(tmp_path / "a.sgp") and node_count(win) == 3 and not inputs(win)
+
+
+def test_files_dropped_on_the_start_panel_start_a_new_project(win, tmp_path, prompts):
+    add_node(win)
+    prompts.answers = [DISCARD]
+    win.show_start()
+    win.add_files(audio(tmp_path, "a.wav", "b.wav"), QPointF(5000, 5000), None)
+    assert win.panel is None and win.path is None
+    assert node_count(win) == 2 and len(inputs(win)) == 2 and win.is_modified()

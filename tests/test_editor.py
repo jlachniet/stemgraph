@@ -1,10 +1,22 @@
-import pytest
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QPalette
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QGraphicsProxyWidget, QLabel, QMenu, QWidgetAction
+from pathlib import Path
 
-from editor import FIT_MARGIN, PLACEHOLDER_TEXT, ChoiceField, EditorView, add_menu_heading
+import pytest
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QRect, QRectF, Qt, QUrl
+from PySide6.QtGui import QDropEvent, QPalette
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QGraphicsProxyWidget
+
+from editor import (
+    FIT_MARGIN,
+    INPUT_SPACING,
+    KEEP_VISIBLE,
+    PLACEHOLDER_TEXT,
+    PORT,
+    TARGET_PORT,
+    ChoiceField,
+    EditorView,
+    audio_files,
+)
 from graph import GRID, NODE_TYPES, Connection, Graph
 from project import ViewState
 
@@ -78,20 +90,16 @@ def test_set_graph_shows_its_nodes_and_wires_at_the_saved_view(view):
     assert view.view_state() == ViewState(0.5, 120, 24)
 
 
-# --- Right-click menu heading ---
+# --- Right-click menu ---
 
 
-def test_menu_heading_is_a_divided_off_title_that_cannot_be_chosen(qapp):
-    menu = QMenu()
-    add_menu_heading(menu, "Add Node")
-    menu.addAction("Input")
-    heading, divider, first = menu.actions()
-    assert isinstance(heading, QWidgetAction) and not heading.isEnabled()
-    label = heading.defaultWidget()
-    assert isinstance(label, QLabel) and label.text() == "Add Node"
-    assert label.font().pointSizeF() < menu.font().pointSizeF()
-    assert divider.isSeparator()
-    assert first.text() == "Input"
+def test_canvas_menu_keeps_node_types_in_a_submenu(view):
+    menu = view.scene().canvas_menu(QPointF(0, 0))
+    add_inputs, nodes, divider, paste = menu.actions()
+    assert nodes.text() == "Add &Node" and add_inputs.text() == "Add &Inputs…"
+    assert divider.isSeparator() and paste.text() == "&Paste"
+    entries = [None if a.isSeparator() else a.data() for a in nodes.menu().actions()]
+    assert entries == ["input", "output", None, "invert", "mix", "split_mid_side"]
 
 
 # --- Node fields ---
@@ -504,3 +512,171 @@ def test_selection_box_scrolls_at_the_window_edge(view):
     view._band_scroll()
     assert view.horizontalScrollBar().value() > before
     QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, QPoint(viewport.width() - 2, 10))
+
+
+# --- Adding Inputs from files ---
+
+
+def touch(folder, *names) -> list[str]:
+    for name in names:
+        (folder / name).write_bytes(b"")
+    return [str(folder / name) for name in names]
+
+
+def test_audio_files_expand_folders_one_level_in_natural_order(tmp_path):
+    stems = tmp_path / "stems"
+    (stems / "old takes").mkdir(parents=True)
+    touch(stems, "10 Vox.wav", "2 Bass.FLAC", "notes.txt", "1 Kick.mp3")
+    touch(stems / "old takes", "Vox take 1.wav")
+    (loose,) = touch(tmp_path, "Song.wav")
+    found = audio_files([str(stems), loose, loose, str(tmp_path / "missing.wav")])
+    assert [Path(path).name for path in found] == ["1 Kick.mp3", "2 Bass.FLAC", "10 Vox.wav", "Song.wav"]
+
+
+def test_add_inputs_makes_a_selected_column_in_one_undo_step(view, tmp_path):
+    paths = touch(tmp_path, "a.wav", "b.wav", "c.wav")
+    add_node(view, "output", 480, 0)
+    scene = view.scene()
+    scene.add_inputs(paths, QPointF(5, 10))
+    inputs = sorted((n for n in scene.graph.nodes.values() if n.type_key == "input"), key=lambda n: n.y)
+    assert [n.values for n in inputs] == [{"file": path} for path in paths]  # names left blank
+    assert {(n.x, n.y) for n in inputs} == {(0, 0), (0, INPUT_SPACING), (0, 2 * INPUT_SPACING)}
+    assert {item.node.id for item in scene.selectedItems()} == {n.id for n in inputs}
+    bottom = scene.node_items[inputs[0].id].sceneBoundingRect().bottom()
+    assert bottom < scene.node_items[inputs[1].id].sceneBoundingRect().top()  # they don't overlap
+    scene.undo()
+    assert [n.type_key for n in scene.graph.nodes.values()] == ["output"]
+
+
+def drop(view: EditorView, paths: list[str], at: QPointF) -> None:
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(path) for path in paths])
+    point = QPointF(view.mapFromScene(at))
+    view.dropEvent(QDropEvent(point, Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier))
+
+
+def test_a_drop_reports_its_files_place_and_the_input_a_single_file_landed_on(view, tmp_path):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    view.set_graph(graph, ViewState())
+    dropped = []
+    view.files_dropped.connect(lambda *args: dropped.append(args))
+    one = touch(tmp_path, "b.wav")
+    two = touch(tmp_path, "c.wav", "a.wav")
+    on_song = QPointF(30, 30)
+    drop(view, one, on_song)
+    drop(view, two, on_song)  # several files: added, not put in the Input
+    drop(view, [str(tmp_path)], on_song)  # a folder, even with one file in it
+    drop(view, one, QPointF(480, 240))
+    assert [([Path(p) for p in paths], target) for paths, _, target in dropped] == [
+        ([Path(one[0])], song.id), ([Path(p) for p in sorted(two)], None), ([tmp_path], None), ([Path(one[0])], None)]
+    assert abs(dropped[-1][1].x() - 480) <= 1 and abs(dropped[-1][1].y() - 240) <= 1
+
+
+def test_set_input_file_shows_the_new_file(view, tmp_path):
+    graph = Graph()
+    song = graph.add_node("input", 0, 0)
+    view.set_graph(graph, ViewState())
+    (path,) = touch(tmp_path, "Song.wav")
+    view.scene().set_input_file(song.id, path)
+    assert graph.nodes[song.id].values["file"] == path
+    assert view.scene().node_items[song.id].file_button.text() == "Song.wav"
+
+
+# --- Dragging several outputs at once ---
+
+
+def drag_wire(view: EditorView, start, end) -> None:
+    """Drag a wire from one port to another with the mouse."""
+    drag(view, start.scenePos(), end.scenePos())
+
+
+def stems_and_mix(view: EditorView, count: int, wired: tuple = ()):
+    """Stems in a column, a Mix and an Output; the stems numbered in `wired` already feed the Mix."""
+    graph = Graph()
+    stems = [graph.add_node("input", 0, i * INPUT_SPACING) for i in range(count)]
+    mix = graph.add_node("mix", 288, 0)
+    out = graph.add_node("output", 288, 240)
+    for index, stem in enumerate(wired):
+        graph.connect(stems[stem].id, 0, mix.id, index)
+    view.set_graph(graph, ViewState(0.5, 200, 200))
+    return graph, view.scene(), stems, mix, out
+
+
+def test_dragging_one_of_several_selected_outputs_wires_them_all_into_a_mix(view):
+    graph, scene, stems, mix, _ = stems_and_mix(view, 3, wired=(2,))  # already in: skipped
+    for stem in stems:
+        scene.node_items[stem.id].setSelected(True)
+    scene.node_items[mix.id].setSelected(True)  # selected, but can't feed itself
+    mix_item = scene.node_items[mix.id]
+    drag_wire(view, scene.node_items[stems[1].id].outputs[0], mix_item.inputs[-1])
+    assert [c.src for c in graph.sources(mix.id)] == [stems[2].id, stems[0].id, stems[1].id]  # top to bottom
+    assert len(mix_item.inputs) == 4
+    scene.undo()
+    assert [c.src for c in graph.sources(mix.id)] == [stems[2].id]  # one undo step
+
+
+def test_several_outputs_dropped_on_an_ordinary_input_connect_nothing(view):
+    graph, scene, stems, _, out = stems_and_mix(view, 2)
+    for stem in stems:
+        scene.node_items[stem.id].setSelected(True)
+    drag_wire(view, scene.node_items[stems[0].id].outputs[0], scene.node_items[out.id].inputs[0])
+    assert not graph.connections
+
+
+def test_an_unselected_output_drags_just_itself(view):
+    graph, scene, stems, mix, _ = stems_and_mix(view, 2)
+    scene.node_items[stems[0].id].setSelected(True)
+    drag_wire(view, scene.node_items[stems[1].id].outputs[0], scene.node_items[mix.id].inputs[0])
+    assert [c.src for c in graph.sources(mix.id)] == [stems[1].id]
+
+
+# --- Empty canvas ---
+
+
+def test_empty_canvas_shows_a_hint_that_panning_keeps_in_reach(view):
+    scene = view.scene()
+    hint = scene.hint_rect()
+    assert scene.content_rect() == hint and hint.center() == QPointF(0, 0) and hint.width() > 0
+    view.centerOn(QPointF(50000, 50000))
+    visible = view.mapToScene(view.viewport().rect()).boundingRect()
+    assert visible.intersected(hint).width() * view.transform().m11() >= KEEP_VISIBLE - 1
+    add_node(view, "output", 2400, 2400)
+    assert scene.content_rect() == scene.nodes_rect()  # nodes take over from the hint
+
+
+def test_dragging_a_wire_shows_where_it_can_go(view):
+    graph, scene, stems, mix, out = stems_and_mix(view, 2)
+    graph.connect(mix.id, 0, out.id, 0)
+    split = graph.add_node("split_mid_side", 600, 0)
+    graph.connect(mix.id, 0, split.id, 0)
+    view.set_graph(graph, ViewState())
+    scene = view.scene()
+    items = scene.node_items
+
+    def lit(node) -> list[bool]:
+        return [port.is_target for port in items[node.id].inputs + items[node.id].outputs]
+
+    scene.show_targets([items[stems[0].id].outputs[0]])  # one stem's output
+    assert lit(mix) == [True, False] and lit(out) == [True] and lit(split) == [True, False, False]
+    assert items[stems[1].id].opacity() < 1 and items[stems[0].id].opacity() == 1  # nothing to plug into
+    scene.show_targets([items[mix.id].inputs[-1]])  # backwards, from the Mix's empty input
+    assert lit(stems[0]) == [True] and lit(stems[1]) == [True]
+    assert lit(split) == [False, False, False] and items[split.id].opacity() < 1  # it's fed by the Mix: a loop
+    scene.show_targets([items[s.id].outputs[0] for s in stems])  # several outputs: only a Mix
+    assert lit(mix) == [True, False] and items[out.id].opacity() < 1 and items[split.id].opacity() < 1
+    scene.show_targets([])
+    assert all(item.opacity() == 1 and not any(p.is_target for p in item.inputs + item.outputs)
+               for item in items.values())
+
+
+def test_ports_grow_and_shrink_smoothly(view):
+    graph, scene, stems, mix, _ = stems_and_mix(view, 1)
+    port = scene.node_items[mix.id].inputs[0]
+    scene.show_targets([scene.node_items[stems[0].id].outputs[0]])
+    assert port.scale() < 1.25 and port.pen().color() != TARGET_PORT  # on its way
+    QTest.qWait(250)
+    assert port.scale() == 1.25 and port.pen().color() == TARGET_PORT  # the empty input's ring
+    scene.show_targets([])
+    QTest.qWait(250)
+    assert port.scale() == 1 and port.pen().color() == PORT

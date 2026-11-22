@@ -38,7 +38,7 @@ ADD_INPUT = "Add input"  # the empty input below a Mix's connected ones
 ADD_TIP = "Add this input"
 SUBTRACT_TIP = "Subtract this input"
 CHOOSE_FILE = "Choose file…"
-ADD_NODE_HEADING = "Add Node"
+EMPTY_HINT = "Drop audio files here, or right-click and choose Add Inputs…"  # on an empty canvas
 
 # --- Canvas controls ---
 
@@ -67,6 +67,8 @@ MENU_REDO = "&Redo"
 MENU_CUT = "Cu&t"
 MENU_COPY = "&Copy"
 MENU_PASTE = "&Paste"
+MENU_ADD_NODE = "Add &Node"
+MENU_ADD_INPUTS = "Add &Inputs…"
 MENU_DUPLICATE = "&Duplicate"
 MENU_DELETE = "De&lete"
 MENU_SELECT_ALL = "Select &All"
@@ -130,6 +132,7 @@ SAVE_PROJECT_TITLE = "Save Project As"
 PROJECT_FILTER = "stemgraph Project Files (*{extension})"
 ALL_FILES_FILTER = "All Files (*)"
 CHOOSE_AUDIO_TITLE = "Choose Audio File"
+CHOOSE_AUDIO_FILES_TITLE = "Add Inputs"
 AUDIO_FILES_FILTER = "Audio Files ({patterns})"
 EXPORT_FOLDER_TITLE = "Export To"
 
@@ -139,6 +142,7 @@ SAVE_CHANGES = "Save changes to {name}?"
 DONT_SAVE = "Don't Save"
 PROJECT_NOT_FOUND = "{file} couldn't be found.\n\n{path}"
 CANT_OPEN = "Couldn't open {file}.\n\n{reason}"
+NO_AUDIO_FILES = "No audio files to add."
 CANT_SAVE = "Couldn't save {file}.\n\n{reason}"
 NOT_A_PROJECT_OR_DAMAGED = "The file isn't a stemgraph project, or it is damaged."
 NOT_A_PROJECT = "The file isn't a stemgraph project."

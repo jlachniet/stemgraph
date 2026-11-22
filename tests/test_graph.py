@@ -263,3 +263,13 @@ def test_paste_keeps_values():
 ])
 def test_load_fragment_rejects_invalid_data(data):
     assert load_fragment(data) is None
+
+
+def test_add_source_appends_and_skips_what_is_already_connected():
+    graph, (a, b, mix, out) = make("input", "input", "mix", "output")
+    graph.connect(mix, 0, out, 0)
+    assert graph.add_source(a, 0, mix) == Connection(a, 0, mix, 0)
+    assert graph.add_source(b, 0, mix) == Connection(b, 0, mix, 1)
+    assert graph.add_source(a, 0, mix) is None  # already feeds it
+    assert graph.add_source(mix, 0, mix) is None
+    assert len(graph.sources(mix)) == 2

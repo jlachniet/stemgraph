@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, Signal
+from PySide6.QtCore import QPointF, QStandardPaths, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,7 +19,17 @@ from PySide6.QtWidgets import (
 
 import build
 import strings
-from editor import DRAG, EDIT, EDIT_SHORTCUTS, ZOOM_LEVELS, EditorScene, EditorView, app_settings
+from editor import (
+    DRAG,
+    EDIT,
+    EDIT_SHORTCUTS,
+    ZOOM_LEVELS,
+    EditorScene,
+    EditorView,
+    app_settings,
+    audio_files,
+    dropped_paths,
+)
 from graph import Graph
 from progress import ProgressDialog
 from project import EXTENSION, ProjectError, ViewState, load, save, snapshot
@@ -126,6 +136,8 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._watch_scene()
         self.view.build_requested.connect(self.build)
+        self.view.files_dropped.connect(self.add_files)
+        self.setAcceptDrops(True)  # files dropped outside the canvas, such as on the start panel
         self._saved = snapshot(self.view.scene().graph)
         self._export_dir: str | None = None  # folder the open project was built to in this session
         self._update_title()
@@ -303,6 +315,48 @@ class MainWindow(QMainWindow):
     def _close_panel(self) -> None:
         if self.panel:
             self.panel.dismiss()
+
+    # --- Dropping files ---
+
+    def dragEnterEvent(self, event) -> None:
+        if dropped_paths(event.mimeData()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+
+    def dropEvent(self, event) -> None:
+        paths = dropped_paths(event.mimeData())
+        if paths:
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            self.add_files(paths, None, None)
+
+    def add_files(self, paths: list[str], pos: QPointF | None, target: int | None) -> None:
+        """Files dropped on the window or chosen with Add Inputs…, in natural name order. A project among them is
+        opened. Otherwise each audio file gets an Input in a column at scene point `pos` (or the middle of the
+        canvas), except that a single file dropped on an Input (`target`) becomes its file. Dropped on the start
+        panel, they start a new project."""
+        projects = [path for path in paths if path.lower().endswith(EXTENSION) and os.path.isfile(path)]
+        if projects:
+            if self.maybe_save():
+                self._open_path(projects[0])
+            return
+        files = audio_files(paths)
+        if not files:
+            show_error(self, strings.NO_AUDIO_FILES)
+            return
+        if isinstance(self.panel, StartPanel) and self.panel.isVisible():
+            if not self.maybe_save():
+                return
+            self._show(Graph(), ViewState(), None)
+            pos = target = None
+        self._close_panel()
+        scene = self.view.scene()
+        if target is not None:
+            scene.set_input_file(target, files[0])
+            return
+        if pos is None:
+            pos = self.view.mapToScene(self.view.viewport().rect().center())
+        scene.add_inputs(files, pos)
 
     # --- File actions ---
 

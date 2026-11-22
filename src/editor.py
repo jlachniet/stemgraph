@@ -1,11 +1,14 @@
 """Qt view of the node graph: canvas, nodes, ports and wires."""
 
 import json
+import os
+import re
 import uuid
 from pathlib import Path
 
 from PySide6.QtCore import (
     QByteArray,
+    QEasingCurve,
     QEvent,
     QLineF,
     QMimeData,
@@ -17,6 +20,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QTimer,
+    QVariantAnimation,
     Signal,
 )
 from PySide6.QtGui import (
@@ -46,7 +50,6 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMenu,
     QPushButton,
@@ -54,7 +57,6 @@ from PySide6.QtWidgets import (
     QStyleOptionComboBox,
     QStylePainter,
     QWidget,
-    QWidgetAction,
 )
 
 import build
@@ -65,6 +67,9 @@ from project import ViewState
 NODE_WIDTH = 8 * GRID
 PORT_RADIUS = 6
 OPEN_PORT_WIDTH = 2  # the ring of a growing node's empty input
+TARGET_PORT_SCALE = 1.25  # while a wire is dragged, the ports it can connect to grow by this much
+TARGET_PORT_MS = 100  # how long they take to grow (and change colour) or go back
+DIMMED_OPACITY = 0.35  # and the nodes it can't connect to fade to this
 CAPTION_GAP = 8  # space between a caption and its text box
 SIGN_SIZE = GRID - 6  # each half of the + / − switch on a growing node's connected inputs, left of the label
 SIGN_LEFT = 12  # its left edge, just clear of the port
@@ -122,6 +127,7 @@ WIRE = QColor("#6e6e6e")         # gray-9
 TEXT = QColor("#eeeeec")         # sand-12
 PLACEHOLDER_TEXT = QColor("#b4b4b4")  # gray-11, low-contrast text
 PORT = QColor("#70b8ff")         # blue-11
+TARGET_PORT = QColor("#c2e6ff")  # blue-12, a port a wire being dragged can connect to
 BUILD_ICON = QColor("#b4b4b4")   # gray-11, the Build button's play icon: a step softer than the text
 SELECTED = QColor("#eeeeee")     # gray-12
 FIELD_BACKGROUND = "#191919"     # gray-2
@@ -193,7 +199,6 @@ QMenu::item:selected {{ background: {MENU_HOVER}; }}
 QMenu::item:disabled {{ color: {DISABLED_TEXT}; }}
 QMenu::separator {{ height: 1px; background: {MENU_SEPARATOR}; margin: 4px 6px; }}  /* same width as item highlights */
 QMenu::right-arrow {{ width: 8px; height: 8px; right: 14px; }}
-QLabel#menu_heading {{ color: {MENU_HEADING}; background: transparent; padding: 4px 24px 2px 16px; }}
 """
 
 FIELD_SCROLL_MARGIN = 2 * GRID  # Tab scrolls a field at least this far inside the view
@@ -201,10 +206,45 @@ FIELD_SCROLL_MARGIN = 2 * GRID  # Tab scrolls a field at least this far inside t
 LAST_AUDIO_DIR_KEY = "last_audio_dir"  # QSettings key: folder the file picker last chose from
 # Common formats that soundfile (libsndfile) can read, alphabetical; it has no M4A/AAC support.
 AUDIO_EXTENSIONS = ("aif", "aiff", "flac", "mp3", "ogg", "opus", "wav")
+INPUT_SPACING = (len(NODE_TYPES["input"].fields) + 3) * GRID  # between added Inputs: their height and a cell
 AUDIO_FILTER = ";;".join([
     strings.AUDIO_FILES_FILTER.format(patterns=" ".join(f"*.{e}" for e in AUDIO_EXTENSIONS)),
     strings.ALL_FILES_FILTER,
 ])
+
+
+def _natural_key(path: str) -> tuple:
+    """Sorts file names the way people count: "2 Bass" before "10 Vox"."""
+    parts = re.split(r"(\d+)", Path(path).name.casefold())
+    return tuple((0, int(part), "") if part.isdigit() else (1, 0, part) for part in parts), path
+
+
+def is_audio_file(path: str) -> bool:
+    return Path(path).suffix.lower().lstrip(".") in AUDIO_EXTENSIONS and os.path.isfile(path)
+
+
+def audio_files(paths: list[str]) -> list[str]:
+    """The audio files among `paths`, each folder standing for the audio files directly inside it (not in its
+    subfolders), in natural name order. Anything else is left out."""
+    found = []
+    for path in paths:
+        if os.path.isdir(path):
+            try:
+                entries = [os.path.join(path, name) for name in os.listdir(path)]
+            except OSError:
+                continue
+            found += [entry for entry in entries if is_audio_file(entry)]
+        elif is_audio_file(path):
+            found.append(path)
+    unique = {os.path.normcase(os.path.abspath(path)): path for path in found}
+    return sorted(unique.values(), key=_natural_key)
+
+
+def dropped_paths(mime: QMimeData | None) -> list[str]:
+    """The local files and folders being dragged, in natural name order."""
+    if mime is None or not mime.hasUrls():
+        return []
+    return sorted((url.toLocalFile() for url in mime.urls() if url.isLocalFile()), key=_natural_key)
 
 
 def app_settings() -> QSettings:
@@ -259,21 +299,6 @@ def _ink_rect(image: QImage) -> QRect:
     return QRect(QPoint(min(xs), min(ys)), QPoint(max(xs), max(ys)))
 
 
-def add_menu_heading(menu: QMenu, text: str) -> None:
-    """Add a title to a menu: small and muted so it can't be mistaken for an option,
-    lined up with the item text, followed by a divider, and not clickable."""
-    label = QLabel(text)
-    label.setObjectName("menu_heading")  # colour and padding in MENU_STYLE
-    font = label.font()
-    font.setPointSizeF(font.pointSizeF() * 0.9)
-    label.setFont(font)
-    action = QWidgetAction(menu)
-    action.setDefaultWidget(label)
-    action.setEnabled(False)  # skipped by the arrow keys
-    menu.addAction(action)
-    menu.addSeparator()
-
-
 def clipboard_fragment() -> tuple[Graph, str] | None:
     """The copied nodes on the clipboard and the id of that copy, or None if it holds no stemgraph nodes."""
     mime = QApplication.clipboard().mimeData()
@@ -323,44 +348,83 @@ class PortItem(QGraphicsEllipseItem):
         self.is_output = is_output
         self.index = index
         self.setPos(NODE_WIDTH if is_output else 0, GRID * (node_item.first_port_row + index + 0.5))
+        self.is_target = False  # a wire being dragged can connect here
+        self._lit = 0.0  # how far it's drawn as a target, 0 to 1, while it changes
+        self._lighting: QVariantAnimation | None = None  # made the first time it's needed
         self.set_open(False)
         self.setCursor(Qt.CrossCursor)
-        self._drag_wire: QGraphicsPathItem | None = None
+        # While dragging from this port: a dashed wire from each port being connected (several when dragging
+        # the output of one of several selected nodes) to the mouse.
+        self._drag_wires: list[tuple[PortItem, QGraphicsPathItem]] = []
 
     def set_open(self, open: bool) -> None:
         """Draw the port as a filled dot, or, for the empty input a growing node keeps for adding more, a ring."""
         self.is_open = open
-        if open:
+        self._show_target(self._lit)
+
+    def set_target(self, target: bool) -> None:
+        """While a wire being dragged can connect to the port, smoothly enlarge it and turn it TARGET_PORT, or
+        take it back."""
+        if target == self.is_target:
+            return
+        self.is_target = target
+        if self._lighting is None:
+            self._lighting = QVariantAnimation()
+            self._lighting.setDuration(TARGET_PORT_MS)
+            self._lighting.setEasingCurve(QEasingCurve.OutCubic)
+            self._lighting.valueChanged.connect(self._show_target)
+        self._lighting.stop()
+        self._lighting.setStartValue(self._lit)  # from wherever it is, if it was still on its way
+        self._lighting.setEndValue(1.0 if target else 0.0)
+        self._lighting.start()
+
+    def _show_target(self, lit: float) -> None:
+        """Draw the port `lit` of the way (0 to 1) from normal to a connection target."""
+        self._lit = lit
+        self.setScale(1 + (TARGET_PORT_SCALE - 1) * lit)
+        color = QColor.fromRgbF(*(a + (b - a) * lit for a, b in zip(PORT.getRgbF(), TARGET_PORT.getRgbF(),
+                                                                       strict=True)))
+        if self.is_open:
             self.setBrush(NODE_BODY)
-            self.setPen(QPen(PORT, OPEN_PORT_WIDTH))
+            self.setPen(QPen(color, OPEN_PORT_WIDTH))
         else:
-            self.setBrush(PORT)
+            self.setBrush(color)
             self.setPen(QPen(NODE_BORDER, 1))
 
     def mousePressEvent(self, event) -> None:
         if event.button() != Qt.LeftButton:
             event.ignore()
             return
-        self._drag_wire = QGraphicsPathItem()
-        self._drag_wire.setPen(QPen(WIRE, 2, Qt.DashLine))
-        self.scene().addItem(self._drag_wire)
+        ports = self.scene().dragged_ports(self)
+        for port in ports:
+            wire = QGraphicsPathItem()
+            wire.setPen(QPen(WIRE, 2, Qt.DashLine))
+            self.scene().addItem(wire)
+            self._drag_wires.append((port, wire))
+        self.scene().show_targets(ports)
 
     def mouseMoveEvent(self, event) -> None:
-        if self._drag_wire:
-            start, end = self.scenePos(), event.scenePos()
+        for port, wire in self._drag_wires:
+            start, end = port.scenePos(), event.scenePos()
             if not self.is_output:
                 start, end = end, start
-            self._drag_wire.setPath(wire_path(start, end))
+            wire.setPath(wire_path(start, end))
 
     def mouseReleaseEvent(self, event) -> None:
-        if not self._drag_wire:
+        if not self._drag_wires:
             return
         scene = self.scene()
-        scene.removeItem(self._drag_wire)
-        self._drag_wire = None
+        ports = [port for port, _ in self._drag_wires]
+        for _, wire in self._drag_wires:
+            scene.removeItem(wire)
+        self._drag_wires = []
+        scene.show_targets([])
         for item in scene.items(event.scenePos()):
             if isinstance(item, PortItem):
-                scene.connect_ports(self, item)
+                if len(ports) == 1:
+                    scene.connect_ports(self, item)
+                else:
+                    scene.connect_many(ports, item)
                 break
 
 
@@ -502,6 +566,7 @@ class NodeItem(ShiftSelects, QGraphicsItem):
             | QGraphicsItem.ItemSendsGeometryChanges
         )
         self.setPos(node.x, node.y)
+        self.drop_target = False
         self.fields: list[QGraphicsProxyWidget] = []  # top to bottom
         for row, name in enumerate(node.type.fields, start=1):
             self._add_field(row, name)
@@ -591,7 +656,17 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         button = QPushButton()
         self._show_file(button, self.node.values.get("file"))
         button.clicked.connect(lambda: self._choose_file(button))
+        self.file_button = button
         return button
+
+    def show_file(self, path: str) -> None:
+        self._show_file(self.file_button, path)
+
+    def set_drop_target(self, target: bool) -> None:
+        """Light up the outline while a file dragged over the node would become its file."""
+        if target != self.drop_target:
+            self.drop_target = target
+            self.update()
 
     def _choose_file(self, button: QPushButton) -> None:
         window = self.scene().views()[0]
@@ -627,7 +702,8 @@ class NodeItem(ShiftSelects, QGraphicsItem):
         painter.drawRoundedRect(self.rect, 4, 4)
         painter.restore()
 
-        painter.setPen(QPen(SELECTED if self.isSelected() else NODE_BORDER, 2))
+        outline = PORT if self.drop_target else SELECTED if self.isSelected() else NODE_BORDER
+        painter.setPen(QPen(outline, 2))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(self.rect, 4, 4)
 
@@ -699,6 +775,7 @@ class EditorScene(QGraphicsScene):
     edited = Signal()  # the user changed the graph (it may have changed back to how it was)
     history_changed = Signal()  # an undo step was added, undone or redone
     reveal = Signal(QRectF)  # undo or redo changed this area; show it if it's off-screen
+    files_chosen = Signal(list, QPointF)  # Add Inputs… chose these files, to add at this scene point
 
     # The clipboard copy pasted last and how many times, so each paste of it lands one grid cell further on.
     _pasted: tuple[str, int] = ("", 0)
@@ -733,6 +810,18 @@ class EditorScene(QGraphicsScene):
             rect = item.sceneBoundingRect() if i == 0 else rect.united(item.sceneBoundingRect())
         return rect
 
+    @staticmethod
+    def hint_rect() -> QRectF:
+        """Where an empty canvas shows how to get started: centered on the origin."""
+        size = QFontMetrics(QApplication.font()).boundingRect(QRect(), Qt.AlignCenter, strings.EMPTY_HINT).size()
+        rect = QRectF(0, 0, size.width(), size.height())
+        rect.moveCenter(QPointF(0, 0))
+        return rect
+
+    def content_rect(self) -> QRectF:
+        """What panning keeps in reach and Zoom to Fit shows: the nodes, or the empty canvas's hint."""
+        return self.nodes_rect() if self.node_items else self.hint_rect()
+
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, BACKGROUND)
         painter.setPen(QPen(GRID_LINE, 0))
@@ -741,6 +830,10 @@ class EditorScene(QGraphicsScene):
         lines = [QLineF(x, rect.top(), x, rect.bottom()) for x in range(left, int(rect.right()) + 1, GRID)]
         lines += [QLineF(rect.left(), y, rect.right(), y) for y in range(top, int(rect.bottom()) + 1, GRID)]
         painter.drawLines(lines)
+        if not self.node_items:
+            painter.setPen(PLACEHOLDER_TEXT)
+            painter.setFont(QApplication.font())
+            painter.drawText(self.hint_rect(), Qt.AlignCenter, strings.EMPTY_HINT)
 
     def contextMenuEvent(self, event) -> None:
         pos = event.scenePos()
@@ -748,20 +841,13 @@ class EditorScene(QGraphicsScene):
         if isinstance(item, QGraphicsProxyWidget):
             super().contextMenuEvent(event)  # a text box's own copy/paste menu
             return
-        menu = QMenu()
         if item is None:
-            self._menu_action(menu, strings.MENU_PASTE, "paste", lambda: self.paste(pos), self.can_paste())
-            menu.addSeparator()
-            add_menu_heading(menu, strings.ADD_NODE_HEADING)
-            for i, group in enumerate(MENU_GROUPS):
-                if i:
-                    menu.addSeparator()
-                for key in group:
-                    menu.addAction(NODE_TYPES[key].title).setData(key)
-            chosen = menu.exec(event.screenPos())
+            menu = self.canvas_menu(pos)
+            chosen = menu.exec(event.screenPos())  # also returns what was chosen in the Add Node submenu
             if chosen and chosen.data():
                 self.add_node(chosen.data(), pos)
             return
+        menu = QMenu()
         clicked = item.topLevelItem()  # a port belongs to its node
         if not clicked.isSelected():
             self.clearSelection()
@@ -772,6 +858,21 @@ class EditorScene(QGraphicsScene):
         self._menu_action(menu, strings.MENU_DUPLICATE, "duplicate", self.duplicate, nodes)
         self._menu_action(menu, strings.MENU_DELETE, "delete", self.delete_selected, True)
         menu.exec(event.screenPos())
+
+    def canvas_menu(self, pos: QPointF) -> QMenu:
+        """The right-click menu for empty canvas at scene point `pos`. Its Add Node submenu's actions hold the node
+        type to add as their data."""
+        menu = QMenu()
+        menu.addAction(strings.MENU_ADD_INPUTS).triggered.connect(lambda: self._choose_inputs(pos))
+        nodes = menu.addMenu(strings.MENU_ADD_NODE)
+        for i, group in enumerate(MENU_GROUPS):
+            if i:
+                nodes.addSeparator()
+            for key in group:
+                nodes.addAction(NODE_TYPES[key].title).setData(key)
+        menu.addSeparator()
+        self._menu_action(menu, strings.MENU_PASTE, "paste", lambda: self.paste(pos), self.can_paste())
+        return menu
 
     @staticmethod
     def _menu_action(menu: QMenu, text: str, command: str, slot, enabled: bool) -> None:
@@ -827,6 +928,45 @@ class EditorScene(QGraphicsScene):
         self.edited.emit()
         self.commit()
 
+    def _choose_inputs(self, pos: QPointF) -> None:
+        settings = app_settings()
+        window = self.views()[0]
+        paths, _ = QFileDialog.getOpenFileNames(
+            window, strings.CHOOSE_AUDIO_FILES_TITLE, settings.value(LAST_AUDIO_DIR_KEY, ""), AUDIO_FILTER)
+        if paths:
+            settings.setValue(LAST_AUDIO_DIR_KEY, str(Path(paths[0]).parent))
+            self.files_chosen.emit(paths, pos)
+
+    def add_inputs(self, paths: list[str], pos: QPointF) -> None:
+        """Add an Input for each file, in a column with its top-left corner at `pos`, and select them. One undo
+        step."""
+        self.clearSelection()
+        for i, path in enumerate(paths):
+            node = self.graph.add_node("input", pos.x(), pos.y() + i * INPUT_SPACING)
+            self.graph.set_value(node.id, "file", path)
+            self._add_item(node)
+            self.node_items[node.id].setSelected(True)
+        self.nodes_changed.emit()
+        self.edited.emit()
+        self.commit()
+
+    def input_at(self, pos: QPointF) -> int | None:
+        """The id of the Input node at a scene point, if there is one."""
+        for item in self.items(pos):
+            node_item = item.topLevelItem()
+            if isinstance(node_item, NodeItem):
+                return node_item.node.id if node_item.node.type_key == "input" else None
+        return None
+
+    def set_input_file(self, node_id: int, path: str) -> None:
+        self.set_value(node_id, "file", path)
+        self.node_items[node_id].show_file(path)
+
+    def show_drop_target(self, node_id: int | None) -> None:
+        """Light up the Input a dragged file would go into (or none)."""
+        for item in self.node_items.values():
+            item.set_drop_target(item.node.id == node_id)
+
     def _add_item(self, node: Node) -> None:
         item = NodeItem(node, *self._inputs(node.id))
         self.addItem(item)
@@ -858,6 +998,47 @@ class EditorScene(QGraphicsScene):
                 wire.update_path()
         self.nodes_changed.emit()
         self.edited.emit()
+
+    def dragged_ports(self, port: PortItem) -> list[PortItem]:
+        """The ports a wire dragged from `port` connects: dragging an output of one of several selected nodes
+        drags that output of each of them, top to bottom; otherwise just `port`."""
+        item = port.node_item
+        if not (port.is_output and item.isSelected()):
+            return [port]
+        items = [i for i in self.selectedItems() if isinstance(i, NodeItem) and port.index < len(i.outputs)]
+        items.sort(key=lambda i: (i.node.y, i.node.x, i.node.id))
+        return [i.outputs[port.index] for i in items] if len(items) > 1 else [port]
+
+    def show_targets(self, ports: list[PortItem]) -> None:
+        """While wires are dragged from `ports`: enlarge the ports they can connect to, and dim the nodes they
+        can't (other than the ones being dragged from). With no ports, put everything back."""
+        sources = {port.node_item for port in ports}
+        for item in self.node_items.values():
+            ends = (item.outputs if not ports[0].is_output else item.inputs) if ports else []
+            targets = [end for end in ends if self._can_join(ports, end)]
+            for port in item.inputs + item.outputs:
+                port.set_target(port in targets)
+            item.setOpacity(1 if not ports or targets or item in sources else DIMMED_OPACITY)
+
+    def _can_join(self, ports: list[PortItem], end: PortItem) -> bool:
+        """Whether wires dragged from `ports` can be dropped on `end`: see connect_ports and connect_many."""
+        if len(ports) > 1:
+            node_id = end.node_item.node.id
+            return any(self.graph.can_add_source(p.node_item.node.id, p.index, node_id) for p in ports)
+        out, inp = (ports[0], end) if ports[0].is_output else (end, ports[0])
+        return self.graph.can_connect(out.node_item.node.id, out.index, inp.node_item.node.id, inp.index)
+
+    def connect_many(self, outputs: list[PortItem], target: PortItem) -> None:
+        """Connect several outputs to a node whose inputs grow, as new inputs in order. Outputs already wired
+        into it are skipped. Onto any other port, nothing is connected."""
+        node = target.node_item.node
+        if target.is_output or not node.type.growing:
+            return
+        for port in outputs:
+            self.graph.add_source(port.node_item.node.id, port.index, node.id)
+        self.sync_wires()
+        self.edited.emit()
+        self.commit()
 
     def connect_ports(self, a: PortItem, b: PortItem) -> None:
         if a.is_output == b.is_output:
@@ -1109,6 +1290,9 @@ class EditorView(QGraphicsView):
     zoom_changed = Signal(int)  # index into ZOOM_LEVELS
     mode_changed = Signal(str)  # the chosen cursor mode (EDIT or DRAG), not counting Space held down
     build_requested = Signal()  # the Build button was clicked
+    # Files were dropped on the canvas or chosen with Add Inputs…: the paths, the scene point to add Inputs at,
+    # and the Input a single dropped file landed on (or None).
+    files_dropped = Signal(list, QPointF, object)
 
     def __init__(self, graph: Graph) -> None:
         scene = EditorScene(graph)
@@ -1168,6 +1352,46 @@ class EditorView(QGraphicsView):
     def _watch_scene(self, scene: EditorScene) -> None:
         scene.nodes_changed.connect(self.update_bounds)
         scene.reveal.connect(self._reveal)
+        scene.files_chosen.connect(lambda paths, pos: self.files_dropped.emit(paths, pos, None))
+
+    # --- Dropping files ---
+    # Handled here rather than in the scene, which ignores drops while in drag mode.
+
+    def _drop_target(self, paths: list[str], pos: QPoint) -> int | None:
+        """The Input a drop at `pos` would set the file of: one is under it, and the drop is a single audio file."""
+        if len(paths) != 1 or not is_audio_file(paths[0]):
+            return None
+        return self.scene().input_at(self.mapToScene(pos))
+
+    def dragEnterEvent(self, event) -> None:
+        if dropped_paths(event.mimeData()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        paths = dropped_paths(event.mimeData())
+        if paths:
+            self.scene().show_drop_target(self._drop_target(paths, event.position().toPoint()))
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:
+        self.scene().show_drop_target(None)
+
+    def dropEvent(self, event) -> None:
+        self.scene().show_drop_target(None)
+        paths = dropped_paths(event.mimeData())
+        if not paths:
+            event.ignore()
+            return
+        event.setDropAction(Qt.CopyAction)
+        event.accept()
+        pos = event.position().toPoint()
+        self.files_dropped.emit(paths, QPointF(self.mapToScene(pos)), self._drop_target(paths, pos))
 
     def _reveal(self, area: QRectF) -> None:
         """Center on `area` if none of it is on screen, without zooming."""
@@ -1200,14 +1424,15 @@ class EditorView(QGraphicsView):
         self._center = QPointF(center) if close else actual
 
     def update_bounds(self) -> None:
-        """Limit panning so at least KEEP_VISIBLE screen px of the nodes' area always stays on screen."""
+        """Limit panning so at least KEEP_VISIBLE screen px of the nodes' area (or an empty canvas's hint) always
+        stays on screen."""
         zoom = self.transform().m11()
         dx = (self.viewport().width() - KEEP_VISIBLE) / zoom
         dy = (self.viewport().height() - KEEP_VISIBLE) / zoom
         center = self._center
         self._recentering = True
         try:
-            self.setSceneRect(self.scene().nodes_rect().adjusted(-dx, -dy, dx, dy))
+            self.setSceneRect(self.scene().content_rect().adjusted(-dx, -dy, dx, dy))
         finally:
             self._recentering = False
         self._recenter(center)  # changing the scene rect would otherwise shift the view
@@ -1305,8 +1530,9 @@ class EditorView(QGraphicsView):
         return self._zoom_index
 
     def zoom_to_fit(self) -> None:
-        """Show all nodes, with FIT_MARGIN screen px around them, at the largest zoom step up to 100% that fits."""
-        rect = self.scene().nodes_rect()
+        """Show all nodes (or an empty canvas's hint), with FIT_MARGIN screen px around them, at the largest zoom
+        step up to 100% that fits."""
+        rect = self.scene().content_rect()
         actual_size = ZOOM_LEVELS.index(1.0)
         index = actual_size
         if self.scene().node_items:
@@ -1315,7 +1541,7 @@ class EditorView(QGraphicsView):
             while index > 0 and (rect.width() * ZOOM_LEVELS[index] > width
                                  or rect.height() * ZOOM_LEVELS[index] > height):
                 index -= 1
-        self._center = rect.center()  # the origin when there are no nodes
+        self._center = rect.center()
         self._apply_zoom(index)
 
     def reset_zoom(self) -> None:

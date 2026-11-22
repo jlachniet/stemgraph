@@ -172,26 +172,44 @@ class Graph:
         for dst in fed:
             self._close_gaps(dst)
 
+    def can_connect(self, src: int, src_output: int, dst: int, dst_input: int) -> bool:
+        """Whether `connect` would allow this connection: both ports exist and it wouldn't make a loop."""
+        if src == dst or src not in self.nodes or dst not in self.nodes:
+            return False
+        if not 0 <= src_output < len(self.nodes[src].type.outputs):
+            return False
+        if not 0 <= dst_input < self.input_count(dst):
+            return False
+        return not self._reaches(dst, src)
+
     def connect(self, src: int, src_output: int, dst: int, dst_input: int) -> Connection | None:
         """Connect an output to an input, replacing any wire already on that input.
 
         Returns None and changes nothing if the connection isn't allowed.
         """
-        if src == dst or src not in self.nodes or dst not in self.nodes:
+        if not self.can_connect(src, src_output, dst, dst_input):
             return None
-        if not 0 <= src_output < len(self.nodes[src].type.outputs):
-            return None
-        if not 0 <= dst_input < self.input_count(dst):
-            return None
-        if self._reaches(dst, src):
-            return None
-
         self.connections = {
             c for c in self.connections if (c.dst, c.dst_input) != (dst, dst_input)
         }
         connection = Connection(src, src_output, dst, dst_input)
         self.connections.add(connection)
         return connection
+
+    def add_source(self, src: int, src_output: int, dst: int) -> Connection | None:
+        """Connect an output to a growing node as its last input, unless it's already connected to it. Returns
+        None and changes nothing if it is, or if the connection isn't allowed."""
+        if not self.can_add_source(src, src_output, dst):
+            return None
+        return self.connect(src, src_output, dst, self.input_count(dst) - 1)
+
+    def can_add_source(self, src: int, src_output: int, dst: int) -> bool:
+        """Whether `add_source` would connect this output."""
+        if dst not in self.nodes or not self.nodes[dst].type.growing:
+            return False
+        if any((c.src, c.src_output) == (src, src_output) for c in self.sources(dst)):
+            return False
+        return self.can_connect(src, src_output, dst, self.input_count(dst) - 1)
 
     def disconnect(self, connection: Connection) -> None:
         if connection in self.connections:
