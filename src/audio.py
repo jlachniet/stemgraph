@@ -206,6 +206,14 @@ def invert(x: np.ndarray, channels: tuple[int, ...]) -> np.ndarray:
     return y
 
 
+def subtract(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """a − b, the shorter padded with silence at the end, so the result is as long as the longer."""
+    y = np.zeros((max(len(a), len(b)), a.shape[1]))
+    y[:len(a)] += a
+    y[:len(b)] -= b
+    return y
+
+
 def split_mid_side(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """The classic split: mid (M, M) and side (S, −S), where M = (L + R)/2 and S = (L − R)/2.
 

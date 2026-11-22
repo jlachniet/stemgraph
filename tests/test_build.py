@@ -235,6 +235,34 @@ def test_unconnected_invert_is_a_problem(tmp_path):
     assert "Invert" in " ".join(problems(g))
 
 
+def add_subtract(g: Graph, source: int | None, minus: int | None, minus_output=0) -> int:
+    node = g.add_node("subtract", 250, 0)
+    if source is not None:
+        g.connect(source, 0, node.id, 0)
+    if minus is not None:
+        g.connect(minus, minus_output, node.id, 1)
+    return node.id
+
+
+def test_subtracted_outputs_are_named_after_both_sources(tmp_path):
+    g = Graph()
+    song = add_input(g, "Song", tone(tmp_path / "song.wav"))
+    vocals = add_input(g, "Vocals", tone(tmp_path / "vocals.wav"))
+    split = add_split(g, song)
+    add_output(g, "", add_subtract(g, song, vocals), y=0)
+    add_output(g, "", add_subtract(g, split, split, minus_output=1), y=100)
+    add_output(g, "", add_subtract(g, song, None), y=200)
+    add_output(g, "", add_subtract(g, None, vocals), y=300)
+    assert list(build.output_names(g).values()) == [
+        "Song minus Vocals", "Song center minus Song side", "Song minus Subtract", "Subtract minus Vocals"]
+
+
+def test_unconnected_subtract_inputs_are_named(tmp_path):
+    g = Graph()
+    add_output(g, "Out", add_subtract(g, add_input(g, "Song", tone(tmp_path / "song.wav")), None))
+    assert problems(g) == ['A Subtract node has nothing connected to its "minus" input.']
+
+
 # --- Running ---
 
 
@@ -278,6 +306,33 @@ def test_build_writes_the_inverted_audio(tmp_path, channels, signs):
     assert run(plan, out)[0]
     source = read(path)
     assert np.array_equal(read(out / "Out.wav"), source * np.array(signs, dtype=np.float32))
+
+
+def test_build_writes_the_difference_padding_the_shorter(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    song_path, vocals_path = tone(tmp_path / "song.wav", frames=4410), tone(tmp_path / "vocals.wav", frames=2205)
+    g = Graph()
+    song, vocals = add_input(g, "Song", song_path), add_input(g, "Vocals", vocals_path)
+    add_output(g, "Out", add_subtract(g, song, vocals))
+    plan = make_plan(g)
+    assert "Subtracting Vocals from Song" in [s.label for s in plan.steps]
+    assert run(plan, out)[0]
+    song_data, vocals_data = read(song_path).astype(np.float64), read(vocals_path).astype(np.float64)
+    expected = song_data.copy()
+    expected[:len(vocals_data)] -= vocals_data
+    assert np.array_equal(read(out / "Out.wav"), expected.astype(np.float32))
+
+
+def test_subtracting_a_source_from_itself_is_silent(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    g = Graph()
+    song = add_input(g, "Song", tone(tmp_path / "song.wav"))
+    add_output(g, "Out", add_subtract(g, song, song))
+    assert run(make_plan(g), out)[0]
+    data = read(out / "Out.wav")
+    assert len(data) == 4410 and not data.any()
 
 
 def test_mono_input_is_logged_and_copied(tmp_path):

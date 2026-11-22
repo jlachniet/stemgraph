@@ -103,16 +103,21 @@ def _source_name(graph: Graph, feeds: dict, node_id: int, output: int) -> str:
     node = graph.nodes[node_id]
     if node.type_key == "input":
         return input_name(node)
-    source = feeds.get((node_id, 0))
-    base = _source_name(graph, feeds, *source) if source else node.type.title
-    return _derived_name(node, output, base)
+    sources = []
+    for index in range(len(node.type.inputs)):
+        source = feeds.get((node_id, index))
+        sources.append(_source_name(graph, feeds, *source) if source else node.type.title)
+    return _derived_name(node, output, sources)
 
 
-def _derived_name(node: Node, output: int, source: str) -> str:
-    """What comes out of a processing node's output, named after its source: "Song center", "Song inverted"."""
+def _derived_name(node: Node, output: int, sources: list[str]) -> str:
+    """What comes out of a processing node's output, named after what feeds each of its inputs: "Song center",
+    "Song inverted", "Song minus Vocals"."""
     if node.type_key == "invert":
-        return strings.SOURCE_INVERTED.format(source=source)
-    return strings.SOURCE_OUTPUT.format(source=source, port=node.type.outputs[output])
+        return strings.SOURCE_INVERTED.format(source=sources[0])
+    if node.type_key == "subtract":
+        return strings.SOURCE_MINUS.format(source=sources[0], minus=sources[1])
+    return strings.SOURCE_OUTPUT.format(source=sources[0], port=node.type.outputs[output])
 
 
 def output_names(graph: Graph) -> dict[int, str]:
@@ -182,6 +187,9 @@ def make_plan(graph: Graph) -> Plan:
             if (node.id, index) not in feeds:
                 if node.type_key == "output":
                     problems.append(strings.OUTPUT_NOT_CONNECTED.format(output=names[node.id].strip()))
+                elif len(node.type.inputs) > 1:
+                    problems.append(strings.NODE_INPUT_NOT_CONNECTED.format(
+                        node=node.type.title, port=node.type.inputs[index]))
                 else:
                     problems.append(strings.NODE_NOT_CONNECTED.format(node=node.type.title))
 
@@ -239,7 +247,8 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
         node = graph.nodes[node_id]
         if node.type_key == "input":
             return _input_label(node)
-        return _derived_name(node, output, describe(*feeds[(node_id, 0)]))
+        sources = [describe(*feeds[(node_id, index)]) for index in range(len(node.type.inputs))]
+        return _derived_name(node, output, sources)
 
     def require(node_id: int, output: int) -> tuple:
         """Add the steps that produce this node output, if not already there; return its store key."""
@@ -275,6 +284,15 @@ def _steps(graph: Graph, outputs: list[Node], feeds: dict, file_info: dict, name
                 channels = {LEFT: (0,), RIGHT: (1,)}.get(node.choice("channels"), (0, 1))
                 steps.append(Step(strings.STEP_INVERT.format(source=name), _invert(source, key, name, channels),
                                   uses=(source,)))
+            return key
+        if node.type_key == "subtract":
+            key = ("node", node_id, 0)
+            if key not in done:
+                a, b = require(*feeds[(node_id, 0)]), require(*feeds[(node_id, 1)])
+                done.add(key)
+                source, minus = describe(*feeds[(node_id, 0)]), describe(*feeds[(node_id, 1)])
+                steps.append(Step(strings.STEP_SUBTRACT.format(source=source, minus=minus),
+                                  _subtract(a, b, key, source, minus), uses=(a, b)))
             return key
         raise ValueError(f"can't compute a {node.type.title} node")
 
@@ -339,6 +357,16 @@ def _invert(source: tuple, key: tuple, name: str, channels: tuple[int, ...]):
             ctx.store[key] = audio.invert(ctx.store[source], channels)
         except MemoryError:
             raise BuildError(strings.NO_MEMORY_INVERT.format(source=name)) from None
+        return []
+    return action
+
+
+def _subtract(a: tuple, b: tuple, key: tuple, source: str, minus: str):
+    def action(ctx: Context) -> list:
+        try:
+            ctx.store[key] = audio.subtract(ctx.store[a], ctx.store[b])
+        except MemoryError:
+            raise BuildError(strings.NO_MEMORY_SUBTRACT.format(source=source, minus=minus)) from None
         return []
     return action
 

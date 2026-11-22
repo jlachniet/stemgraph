@@ -105,7 +105,7 @@ BAND_SCROLL_INTERVAL = 16  # ms between selection-box scrolling ticks
 # group sorted alphabetically by node title (what the menu shows), not by type key, when adding a node type.
 MENU_GROUPS = [
     ["input", "output"],
-    ["invert", "split_mid_side"],
+    ["invert", "split_mid_side", "subtract"],
 ]
 
 # Radix Colors dark scales (see docs/design.md)

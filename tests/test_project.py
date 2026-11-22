@@ -176,6 +176,16 @@ def test_invert_channels_round_trip_and_both_is_not_saved():
     assert loaded.nodes[invert.id].values["channels"] == "left"
 
 
+def test_subtract_with_both_inputs_round_trips():
+    graph = Graph()
+    song, vocals = graph.add_node("input", 0, 0), graph.add_node("input", 0, 100)
+    subtract = graph.add_node("subtract", 200, 0)
+    graph.connect(song.id, 0, subtract.id, 0)
+    graph.connect(vocals.id, 0, subtract.id, 1)
+    loaded, _ = loads(dumps(graph, ViewState(), "."), ".")
+    assert snapshot(loaded) == snapshot(graph)
+
+
 def test_rejects_unknown_algorithm():
     node = {"id": 1, "type": "split_mid_side", "x": 0, "y": 0, "values": {"algorithm": "fancy"}}
     with pytest.raises(ProjectError):

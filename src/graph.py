@@ -47,6 +47,7 @@ NODE_TYPES = {
         fields=("algorithm",),
     ),
     "invert": NodeType(strings.NODE_INVERT, (strings.PORT_AUDIO,), (strings.PORT_AUDIO,), fields=("channels",)),
+    "subtract": NodeType(strings.NODE_SUBTRACT, (strings.PORT_AUDIO, strings.PORT_MINUS), (strings.PORT_AUDIO,)),
     "output": NodeType(strings.NODE_OUTPUT, (strings.PORT_AUDIO,), (), fields=("name",)),
 }
 

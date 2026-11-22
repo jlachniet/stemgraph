@@ -171,6 +171,14 @@ def test_invert_channels_is_a_dropdown_defaulting_to_both(view):
     assert graph.nodes[invert.id].values["channels"] == "right"
 
 
+def test_subtract_has_two_inputs_and_one_output(view):
+    graph = Graph()
+    subtract = graph.add_node("subtract", 0, 0)
+    view.set_graph(graph, ViewState())
+    item = view.scene().node_items[subtract.id]
+    assert len(item.inputs) == 2 and len(item.outputs) == 1 and not item.fields
+
+
 def test_open_dropdown_is_drawn_above_ports_and_other_nodes(view):
     graph = Graph()
     split = graph.add_node("split_mid_side", 0, 0)

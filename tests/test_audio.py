@@ -150,6 +150,25 @@ def test_invert_flips_only_the_given_channels(channels):
         assert np.array_equal(y[:, channel], expected)
 
 
+def test_subtract_takes_minus_from_audio():
+    rng = np.random.default_rng(10)
+    a, b = rng.uniform(-1, 1, (1000, 2)), rng.uniform(-1, 1, (1000, 2))
+    originals = a.copy(), b.copy()
+    assert np.array_equal(audio.subtract(a, b), a - b)
+    assert np.array_equal(a, originals[0]) and np.array_equal(b, originals[1])  # the inputs are left alone
+
+
+@pytest.mark.parametrize("a_frames, b_frames", [(1000, 600), (600, 1000)])
+def test_subtract_pads_the_shorter_input_with_silence(a_frames, b_frames):
+    rng = np.random.default_rng(11)
+    a, b = rng.uniform(-1, 1, (a_frames, 2)), rng.uniform(-1, 1, (b_frames, 2))
+    y = audio.subtract(a, b)
+    assert len(y) == 1000
+    padded_a, padded_b = np.zeros((1000, 2)), np.zeros((1000, 2))
+    padded_a[:a_frames], padded_b[:b_frames] = a, b
+    assert np.array_equal(y, padded_a - padded_b)
+
+
 def test_split_can_be_cancelled():
     with pytest.raises(audio.Cancelled):
         audio.split_paulus_torcoli(np.zeros((1000, 2)), cancelled=lambda: True)
