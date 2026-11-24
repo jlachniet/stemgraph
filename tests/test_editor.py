@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QApplication, QGraphicsProxyWidget, QToolTip
 from editor import (
     FIT_MARGIN,
     INPUT_SPACING,
-    KEEP_VISIBLE,
     PLACEHOLDER_TEXT,
     PORT,
     TARGET_PORT,
@@ -656,15 +655,21 @@ def test_an_unselected_output_drags_just_itself(view):
 # --- Empty canvas ---
 
 
-def test_empty_canvas_shows_a_hint_that_panning_keeps_in_reach(view):
-    scene = view.scene()
-    hint = scene.hint_rect()
-    assert scene.content_rect() == hint and hint.center() == QPointF(0, 0) and hint.width() > 0
-    view.centerOn(QPointF(50000, 50000))
-    visible = view.mapToScene(view.viewport().rect()).boundingRect()
-    assert visible.intersected(hint).width() * view.transform().m11() >= KEEP_VISIBLE - 1
+def test_empty_canvas_hint_floats_in_the_middle_of_the_view(view):
+    def hint_shown() -> bool:
+        """Whether there's text in the middle strip of the view: the grid lines are much darker."""
+        image = view.viewport().grab().toImage()
+        middle = image.height() // 2
+        return any(image.pixelColor(x, y).lightness() > 80
+                   for x in range(image.width()) for y in range(middle - 6, middle + 6))
+
+    assert hint_shown()
+    view.centerOn(QPointF(5000, 5000))  # it doesn't pan away with the canvas
+    view.zoom_in()
+    assert hint_shown()
     add_node(view, "output", 2400, 2400)
-    assert scene.content_rect() == scene.nodes_rect()  # nodes take over from the hint
+    view.centerOn(QPointF(0, 0))
+    assert not hint_shown()
 
 
 def test_dragging_a_wire_shows_where_it_can_go(view):

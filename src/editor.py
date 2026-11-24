@@ -825,18 +825,6 @@ class EditorScene(QGraphicsScene):
             rect = item.sceneBoundingRect() if i == 0 else rect.united(item.sceneBoundingRect())
         return rect
 
-    @staticmethod
-    def hint_rect() -> QRectF:
-        """Where an empty canvas shows how to get started: centered on the origin."""
-        size = QFontMetrics(QApplication.font()).boundingRect(QRect(), Qt.AlignCenter, strings.EMPTY_HINT).size()
-        rect = QRectF(0, 0, size.width(), size.height())
-        rect.moveCenter(QPointF(0, 0))
-        return rect
-
-    def content_rect(self) -> QRectF:
-        """What panning keeps in reach and Zoom to Fit shows: the nodes, or the empty canvas's hint."""
-        return self.nodes_rect() if self.node_items else self.hint_rect()
-
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, BACKGROUND)
         painter.setPen(QPen(GRID_LINE, 0))
@@ -845,10 +833,6 @@ class EditorScene(QGraphicsScene):
         lines = [QLineF(x, rect.top(), x, rect.bottom()) for x in range(left, int(rect.right()) + 1, GRID)]
         lines += [QLineF(rect.left(), y, rect.right(), y) for y in range(top, int(rect.bottom()) + 1, GRID)]
         painter.drawLines(lines)
-        if not self.node_items:
-            painter.setPen(PLACEHOLDER_TEXT)
-            painter.setFont(QApplication.font())
-            painter.drawText(self.hint_rect(), Qt.AlignCenter, strings.EMPTY_HINT)
 
     def contextMenuEvent(self, event) -> None:
         pos = event.scenePos()
@@ -1435,15 +1419,15 @@ class EditorView(QGraphicsView):
         self._center = QPointF(center) if close else actual
 
     def update_bounds(self) -> None:
-        """Limit panning so at least KEEP_VISIBLE screen px of the nodes' area (or an empty canvas's hint) always
-        stays on screen."""
+        """Limit panning so at least KEEP_VISIBLE screen px of the nodes' area always stays on screen (or of the
+        origin, while there are no nodes)."""
         zoom = self.transform().m11()
         dx = (self.viewport().width() - KEEP_VISIBLE) / zoom
         dy = (self.viewport().height() - KEEP_VISIBLE) / zoom
         center = self._center
         self._recentering = True
         try:
-            self.setSceneRect(self.scene().content_rect().adjusted(-dx, -dy, dx, dy))
+            self.setSceneRect(self.scene().nodes_rect().adjusted(-dx, -dy, dx, dy))
         finally:
             self._recentering = False
         self._recenter(center)  # changing the scene rect would otherwise shift the view
@@ -1541,9 +1525,9 @@ class EditorView(QGraphicsView):
         return self._zoom_index
 
     def zoom_to_fit(self) -> None:
-        """Show all nodes (or an empty canvas's hint), with FIT_MARGIN screen px around them, at the largest zoom
-        step up to 100% that fits."""
-        rect = self.scene().content_rect()
+        """Show all nodes, with FIT_MARGIN screen px around them, at the largest zoom step up to 100% that fits. With
+        no nodes, show the origin at 100%."""
+        rect = self.scene().nodes_rect()
         actual_size = ZOOM_LEVELS.index(1.0)
         index = actual_size
         if self.scene().node_items:
@@ -1698,6 +1682,14 @@ class EditorView(QGraphicsView):
             self.viewport().update()
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
+        if not self.scene().node_items:
+            # How to get started, floating in the middle of the view: it doesn't pan or zoom with the canvas.
+            painter.save()
+            painter.resetTransform()
+            painter.setPen(PLACEHOLDER_TEXT)
+            painter.setFont(QApplication.font())
+            painter.drawText(self.viewport().rect(), Qt.AlignCenter, strings.EMPTY_HINT)
+            painter.restore()
         if self._band_start is None:
             return
         painter.save()
